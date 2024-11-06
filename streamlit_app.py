@@ -56,13 +56,14 @@ def add_betting_recommendations(st, home_team, away_team, home_prob, away_prob, 
     def check_underdog_override(underdog_prob, underdog_odds, favorite_odds):
         underdog_percentage = underdog_prob * 100
 
-        # Find the applicable threshold
+        # Loop through thresholds and find the required differential for the current underdog percentage
         for threshold, required_diff in underdog_thresholds.items():
             if underdog_percentage <= threshold:
-                # Check if odds differential is sufficient
                 actual_diff = underdog_odds - favorite_odds
+                # Ensure override only triggers if actual differential exceeds required
                 if actual_diff > required_diff:
                     return True
+                break  # Stop further checks once the matching threshold is found
         return False
 
     # Determine if we have an underdog override situation
