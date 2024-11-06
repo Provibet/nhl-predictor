@@ -3,108 +3,292 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, text
+from sqlalchemy.sql import text as sql_text
 import joblib
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload
 import io
-from datetime import datetime
+from datetime import datetime, date, timedelta
+import pytz
+from typing import Dict, List, Tuple
+import warnings
 
+# Suppress warnings
+warnings.filterwarnings('ignore')
+
+# Set matplotlib style for better visualizations
+plt.style.use('seaborn')
 
 def add_betting_recommendations(st, home_team, away_team, home_prob, away_prob, draw_prob,
-                                home_odds, away_odds, draw_odds, stake,
-                                confidence_score):  # Add confidence_score parameter
-    """Add clear betting recommendations with reasoning"""
+                                home_odds, away_odds, draw_odds, stake, confidence_score):
+    """Add betting recommendations with a more conservative, edge-based approach"""
     st.markdown("### 💰 Betting Recommendations")
 
-    # Calculate EVs
-    home_ev = (home_prob * (home_odds - 1) * stake) - ((1 - home_prob) * stake)
-    away_ev = (away_prob * (away_odds - 1) * stake) - ((1 - away_prob) * stake)
-    draw_ev = (draw_prob * (draw_odds - 1) * stake) - ((1 - draw_prob) * stake)
+    # Calculate implied probabilities and market efficiency
+    home_implied_prob = 1 / home_odds
+    away_implied_prob = 1 / away_odds
+    draw_implied_prob = 1 / draw_odds
+    market_efficiency = home_implied_prob + away_implied_prob + draw_implied_prob
 
-    # Adjust EVs based on confidence
-    if confidence_score < 0.25:  # Low confidence
-        home_ev *= 0.5  # Reduce expected value for low confidence predictions
-        away_ev *= 0.5
-        draw_ev *= 0.5
-    elif confidence_score < 0.4:  # Medium confidence
-        home_ev *= 0.75
-        away_ev *= 0.75
-        draw_ev *= 0.75
-    # High confidence (>= 0.4) uses full EV
+    # Define the underdog confidence thresholds and required odds differentials
+    underdog_thresholds = {
+        30: 2.95,
+        31: 0.75,
+        32: 8.83,
+        33: 7.17,
+        34: 5.75,
+        35: 4.55,
+        36: 3.55,
+        37: 2.73,
+        38: 2.07,
+        39: 1.55,
+        40: 1.15,
+        41: 0.85,
+        42: 0.63,
+        43: 0.47,
+        44: 0.35,
+        45: 0.25
+    }
 
-    # Calculate ROI percentages
-    home_roi = (home_ev / stake) * 100
-    away_roi = (away_ev / stake) * 100
-    draw_roi = (draw_ev / stake) * 100
+    # Check for underdog override
+    def check_underdog_override(underdog_prob, underdog_odds, favorite_odds):
+        underdog_percentage = underdog_prob * 100
 
-    # Create recommendation box
-    best_bet = max(
-        ("Home", home_ev, home_roi, home_prob, home_odds, home_team),
-        ("Away", away_ev, away_roi, away_prob, away_odds, away_team),
-        ("Draw", draw_ev, draw_roi, draw_prob, draw_odds, "Draw"),
-        key=lambda x: x[1]
-    )
+        # Find the applicable threshold
+        for threshold, required_diff in underdog_thresholds.items():
+            if underdog_percentage <= threshold:
+                # Check if odds differential is sufficient
+                actual_diff = underdog_odds - favorite_odds
+                if actual_diff > required_diff:
+                    return True
+        return False
 
-    if best_bet[1] > 0:  # If best EV is positive
-        recommendation_box = st.container()
-        with recommendation_box:
-            confidence_color = "#1a472a" if confidence_score >= 0.4 else (
-                "#2a4d1a" if confidence_score >= 0.25 else "#4d1a1a")
-            st.markdown(
-                f"""
-                <div style='background-color: {confidence_color}; padding: 20px; border-radius: 10px;'>
-                    <h4 style='color: white; margin-top: 0;'>🎯 RECOMMENDED BET</h4>
-                    <p style='color: white; font-size: 18px;'><strong>{best_bet[5]}</strong> ({best_bet[0]})</p>
-                    <ul style='color: white;'>
-                        <li>Expected Value: £{best_bet[1]:.2f}</li>
-                        <li>ROI: {best_bet[2]:.1f}%</li>
-                        <li>Win Probability: {best_bet[3]:.1%}</li>
-                        <li>Odds: {best_bet[4]:.2f}</li>
-                        <li>Confidence Score: {confidence_score:.2f}</li>
-                    </ul>
-                </div>
-                """,
-                unsafe_allow_html=True
-            )
+    # Determine if we have an underdog override situation
+    override_bet = None
+    if home_implied_prob > away_implied_prob:  # Home team is favorite
+        if check_underdog_override(away_prob, away_odds, home_odds):
+            override_bet = "Away"
+    else:  # Away team is favorite
+        if check_underdog_override(home_prob, home_odds, away_odds):
+            override_bet = "Home"
 
-        # Add confidence-based warning if needed
+    if override_bet:
+        # Create override recommendation
+        betting_options = {
+            "Home": {
+                "team": home_team,
+                "odds": home_odds,
+                "prob": home_prob,
+                "implied_prob": home_implied_prob,
+                "edge": 0,
+                "stake": stake if override_bet == "Home" else 0
+            },
+            "Away": {
+                "team": away_team,
+                "odds": away_odds,
+                "prob": away_prob,
+                "implied_prob": away_implied_prob,
+                "edge": 0,
+                "stake": stake if override_bet == "Away" else 0
+            },
+            "Draw": {
+                "team": "Draw",
+                "odds": draw_odds,
+                "prob": draw_prob,
+                "implied_prob": draw_implied_prob,
+                "edge": 0,
+                "stake": 0
+            }
+        }
+
+        best_bet = (override_bet, betting_options[override_bet])
+
+        # Display override recommendation
+        st.markdown(
+            f"""
+            <div style='background-color: #4a1c7c; padding: 20px; border-radius: 10px;'>
+                <h4 style='color: white; margin-top: 0;'>🎯 UNDERDOG VALUE BET</h4>
+                <p style='color: white; font-size: 18px;'>
+                    <strong>{best_bet[1]['team']}</strong> ({best_bet[0]})
+                </p>
+                <ul style='color: white;'>
+                    <li>Odds: {best_bet[1]['odds']:.2f}</li>
+                    <li>Model Probability: {best_bet[1]['prob']:.1%}</li>
+                    <li>Recommended Stake: £{best_bet[1]['stake']:.2f}</li>
+                    <li>Override Type: Underdog Value Play</li>
+                </ul>
+            </div>
+            """,
+            unsafe_allow_html=True
+        )
+
+        st.info(
+            "ℹ️ This bet is recommended based on underdog value criteria, overriding standard model recommendation.")
+
+        return {
+            "best_bet": best_bet[0],
+            "best_edge": 0,
+            "recommended_stake": best_bet[1]["stake"],
+            "all_edges": {k: v["edge"] for k, v in betting_options.items()},
+            "market_efficiency": market_efficiency
+        }
+
+    # If no override, continue with original logic
+    # Normalize implied probabilities to account for overround
+    home_implied_prob_norm = home_implied_prob / market_efficiency
+    away_implied_prob_norm = away_implied_prob / market_efficiency
+    draw_implied_prob_norm = draw_implied_prob / market_efficiency
+
+    # Calculate edges (difference between model probability and normalized implied probability)
+    home_edge = home_prob - home_implied_prob_norm
+    away_edge = away_prob - away_implied_prob_norm
+    draw_edge = draw_prob - draw_implied_prob_norm
+
+    # Determine stake based on confidence and edge
+    def get_recommended_stake(edge: float, conf_score: float, base_stake: float) -> float:
+        if conf_score < 0.25:  # Low confidence
+            return 0
+        elif conf_score < 0.40:  # Medium confidence
+            if edge > 0.10:
+                return base_stake * 0.5
+            return 0
+        else:  # High confidence
+            if edge > 0.15:
+                return base_stake
+            elif edge > 0.10:
+                return base_stake * 0.75
+            elif edge > 0.05:
+                return base_stake * 0.5
+            return 0
+
+    # Calculate recommended stakes
+    recommended_stakes = {
+        "Home": get_recommended_stake(home_edge, confidence_score, stake),
+        "Away": get_recommended_stake(away_edge, confidence_score, stake),
+        "Draw": get_recommended_stake(draw_edge, confidence_score, stake)
+    }
+
+    # Prepare betting options with all relevant information
+    betting_options = {
+        "Home": {
+            "team": home_team,
+            "odds": home_odds,
+            "prob": home_prob,
+            "implied_prob": home_implied_prob_norm,
+            "edge": home_edge,
+            "stake": recommended_stakes["Home"]
+        },
+        "Away": {
+            "team": away_team,
+            "odds": away_odds,
+            "prob": away_prob,
+            "implied_prob": away_implied_prob_norm,
+            "edge": away_edge,
+            "stake": recommended_stakes["Away"]
+        },
+        "Draw": {
+            "team": "Draw",
+            "odds": draw_odds,
+            "prob": draw_prob,
+            "implied_prob": draw_implied_prob_norm,
+            "edge": draw_edge,
+            "stake": recommended_stakes["Draw"]
+        }
+    }
+
+    # Find best bet (highest edge with recommended stake > 0)
+    valid_bets = {k: v for k, v in betting_options.items() if v["stake"] > 0}
+    if valid_bets:
+        best_bet = max(valid_bets.items(), key=lambda x: x[1]["edge"])
+
+        # Display recommendation
+        confidence_color = (
+            "#1a472a" if confidence_score >= 0.4
+            else "#2a4d1a" if confidence_score >= 0.25
+            else "#4d1a1a"
+        )
+
+        st.markdown(
+            f"""
+            <div style='background-color: {confidence_color}; padding: 20px; border-radius: 10px;'>
+                <h4 style='color: white; margin-top: 0;'>🎯 RECOMMENDED BET</h4>
+                <p style='color: white; font-size: 18px;'>
+                    <strong>{best_bet[1]['team']}</strong> ({best_bet[0]})
+                </p>
+                <ul style='color: white;'>
+                    <li>Odds: {best_bet[1]['odds']:.2f}</li>
+                    <li>Model Probability: {best_bet[1]['prob']:.1%}</li>
+                    <li>Edge: {best_bet[1]['edge']:.1%}</li>
+                    <li>Confidence Score: {confidence_score:.2f}</li>
+                    <li>Recommended Stake: £{best_bet[1]['stake']:.2f}</li>
+                </ul>
+            </div>
+            """,
+            unsafe_allow_html=True
+        )
+
+        # Add warning messages based on confidence
         if confidence_score < 0.25:
-            st.warning("⚠️ Low confidence prediction - consider reducing stake or skipping")
+            st.warning("⚠️ Low model confidence - consider skipping this bet")
         elif confidence_score < 0.4:
-            st.info("ℹ️ Medium confidence prediction - consider reducing stake")
+            st.info("ℹ️ Medium confidence - consider reducing stake")
     else:
-        st.warning("⚠️ No positive expected value bets found. Consider skipping this game.")
+        st.warning("⚠️ No significant edges found - no bet recommended")
 
-    # Add detailed value breakdown
-    st.markdown("#### Value Breakdown")
+    # Add detailed edge analysis
+    st.markdown("#### Edge Analysis")
     col1, col2, col3 = st.columns(3)
 
-    with col1:
-        st.metric(
-            f"{home_team} (Home)",
-            f"£{home_ev:.2f} EV",
-            f"{home_roi:.1f}% ROI",
-            delta_color="normal" if home_ev > 0 else "off"
-        )
+    def display_edge_analysis(col, bet_type, data):
+        with col:
+            edge_color = (
+                "red" if data["edge"] <= 0
+                else "orange" if data["edge"] < 0.05
+                else "green"
+            )
+            col.metric(
+                f"{data['team']} ({bet_type})",
+                f"Edge: {data['edge']:.1%}",
+                f"Stake: £{data['stake']:.2f}",
+                delta_color="normal" if data["stake"] > 0 else "off"
+            )
 
-    with col2:
-        st.metric(
-            "Draw",
-            f"£{draw_ev:.2f} EV",
-            f"{draw_roi:.1f}% ROI",
-            delta_color="normal" if draw_ev > 0 else "off"
-        )
+    display_edge_analysis(col1, "Home", betting_options["Home"])
+    display_edge_analysis(col2, "Draw", betting_options["Draw"])
+    display_edge_analysis(col3, "Away", betting_options["Away"])
 
-    with col3:
-        st.metric(
-            f"{away_team} (Away)",
-            f"£{away_ev:.2f} EV",
-            f"{away_roi:.1f}% ROI",
-            delta_color="normal" if away_ev > 0 else "off"
-        )
+    # Add methodology explanation
+    with st.expander("ℹ️ How are recommendations calculated?"):
+        st.markdown("""
+        Our betting recommendations are based on three key factors:
 
+        1. **Price Edge**: The difference between our model's predicted probability and the market-implied probability
+        2. **Model Confidence**: How certain the model is about its prediction
+        3. **Conservative Staking**: Stakes are adjusted based on both edge size and confidence level
+
+        Stake recommendations:
+        - High confidence (≥0.40):
+            * Large edge (>15%): Full stake
+            * Medium edge (10-15%): 75% stake
+            * Small edge (5-10%): 50% stake
+        - Medium confidence (0.25-0.40):
+            * Large edge (>10%): 50% stake
+            * Otherwise: No bet
+        - Low confidence (<0.25):
+            * No bet recommended
+
+        This conservative approach helps manage risk and ensure we only bet when we have a clear advantage.
+        """)
+
+    return {
+        "best_bet": best_bet[0] if valid_bets else None,
+        "best_edge": best_bet[1]["edge"] if valid_bets else 0,
+        "recommended_stake": best_bet[1]["stake"] if valid_bets else 0,
+        "all_edges": {k: v["edge"] for k, v in betting_options.items()},
+        "market_efficiency": market_efficiency
+    }
 
 def add_risk_assessment(st, home_prob, away_prob, draw_prob, h2h_stats, home_stats, away_stats):
     """Add risk assessment indicators"""
@@ -314,7 +498,53 @@ def get_head_to_head_stats(home_team, away_team):
     """
     return pd.read_sql(query, engine).iloc[0]
 
-def get_form_guide(team, last_n=5):
+
+def get_form_guide(home_team, away_team, last_n=5):
+    """Get head-to-head form guide between two teams"""
+    engine = init_connection()
+    query = f"""
+    SELECT 
+        game_date,
+        home_team,
+        away_team,
+        CAST(home_team_score AS INTEGER) as home_score,
+        CAST(away_team_score AS INTEGER) as away_score,
+        CASE 
+            WHEN CAST(home_team_score AS INTEGER) > CAST(away_team_score AS INTEGER) THEN home_team
+            WHEN CAST(away_team_score AS INTEGER) > CAST(home_team_score AS INTEGER) THEN away_team
+            ELSE 'Draw'
+        END as winner
+    FROM nhl24_results
+    WHERE (home_team = '{home_team}' AND away_team = '{away_team}')
+       OR (home_team = '{away_team}' AND away_team = '{home_team}')
+    ORDER BY game_date DESC
+    LIMIT {last_n}
+    """
+
+    df = pd.read_sql(query, engine)
+
+    if not df.empty:
+        # Add formatted result column
+        df['result'] = df.apply(lambda row:
+                                f"{row['home_team']} {row['home_score']} - {row['away_score']} {row['away_team']}",
+                                axis=1
+                                )
+
+        # Format date
+        df['game_date'] = pd.to_datetime(df['game_date']).dt.strftime('%Y-%m-%d')
+
+        # Select and rename columns
+        return df[['game_date', 'result', 'winner']].rename(columns={
+            'game_date': 'Date',
+            'result': 'Score',
+            'winner': 'Winner'
+        })
+
+    return pd.DataFrame()
+
+
+def get_team_form(team, last_n=5):
+    """Get recent form for a single team"""
     engine = init_connection()
     query = f"""
     SELECT 
@@ -324,25 +554,40 @@ def get_form_guide(team, last_n=5):
             ELSE home_team
         END as opponent,
         CASE 
-            WHEN home_team = '{team}' THEN CAST(home_team_score AS INTEGER)
-            ELSE CAST(away_team_score AS INTEGER)
-        END as goals_for,
-        CASE 
-            WHEN home_team = '{team}' THEN CAST(away_team_score AS INTEGER)
-            ELSE CAST(home_team_score AS INTEGER)
-        END as goals_against,
+            WHEN home_team = '{team}' 
+            THEN home_team || ' ' || home_team_score || ' - ' || away_team_score || ' ' || away_team
+            ELSE home_team || ' ' || home_team_score || ' - ' || away_team_score || ' ' || away_team
+        END as result,
         CASE 
             WHEN (home_team = '{team}' AND CAST(home_team_score AS INTEGER) > CAST(away_team_score AS INTEGER)) OR
                  (away_team = '{team}' AND CAST(away_team_score AS INTEGER) > CAST(home_team_score AS INTEGER))
             THEN 'W'
-            ELSE 'L'
-        END as result
+            WHEN (home_team = '{team}' AND CAST(home_team_score AS INTEGER) < CAST(away_team_score AS INTEGER)) OR
+                 (away_team = '{team}' AND CAST(away_team_score AS INTEGER) < CAST(home_team_score AS INTEGER))
+            THEN 'L'
+            ELSE 'D'
+        END as outcome
     FROM nhl24_results
     WHERE home_team = '{team}' OR away_team = '{team}'
     ORDER BY game_date DESC
     LIMIT {last_n}
     """
-    return pd.read_sql(query, engine)
+
+    df = pd.read_sql(query, engine)
+
+    if not df.empty:
+        # Format date
+        df['game_date'] = pd.to_datetime(df['game_date']).dt.strftime('%Y-%m-%d')
+
+        # Select and rename columns
+        return df[['game_date', 'opponent', 'result', 'outcome']].rename(columns={
+            'game_date': 'Date',
+            'opponent': 'Opponent',
+            'result': 'Score',
+            'outcome': 'Result'
+        })
+
+    return pd.DataFrame()
 
 # Analysis helper functions
 def calculate_ev(probability, odds, stake):
@@ -578,6 +823,169 @@ def calculate_confidence(probabilities, ensemble_model, features):
 
     return confidence_score
 
+
+def save_prediction_to_db(engine, prediction_data: dict):
+    """Save prediction data to database"""
+    try:
+        # Create predictions table if it doesn't exist
+        create_table_query = """
+        CREATE TABLE IF NOT EXISTS nhl_prediction_tracking (
+            id SERIAL PRIMARY KEY,
+            prediction_time TIMESTAMP,
+            game_date DATE,
+            home_team VARCHAR(100),
+            away_team VARCHAR(100),
+            home_odds FLOAT,
+            away_odds FLOAT,
+            draw_odds FLOAT,
+            home_prob FLOAT,
+            away_prob FLOAT,
+            draw_prob FLOAT,
+            confidence_score FLOAT,
+            best_bet VARCHAR(20),
+            best_edge FLOAT,
+            recommended_stake FLOAT,
+            market_efficiency FLOAT,
+            actual_result VARCHAR(20) NULL,
+            actual_score VARCHAR(20) NULL,
+            profit_loss FLOAT NULL,
+            notes TEXT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+        """
+
+        engine.execute(create_table_query)
+
+        # Prepare data for insertion
+        insert_query = """
+        INSERT INTO nhl_prediction_tracking (
+            prediction_time, game_date, home_team, away_team,
+            home_odds, away_odds, draw_odds,
+            home_prob, away_prob, draw_prob,
+            confidence_score, best_bet, best_edge,
+            recommended_stake, market_efficiency
+        ) VALUES (
+            %(prediction_time)s, %(game_date)s, %(home_team)s, %(away_team)s,
+            %(home_odds)s, %(away_odds)s, %(draw_odds)s,
+            %(home_prob)s, %(away_prob)s, %(draw_prob)s,
+            %(confidence_score)s, %(best_bet)s, %(best_edge)s,
+            %(recommended_stake)s, %(market_efficiency)s
+        )
+        """
+
+        with engine.connect() as conn:
+            conn.execute(insert_query, prediction_data)
+
+        return True, "Prediction saved successfully!"
+    except Exception as e:
+        return False, f"Error saving prediction: {str(e)}"
+
+
+def view_prediction_history():
+    """View and update past predictions"""
+    engine = init_connection()
+
+    st.markdown("### Prediction History")
+
+    # Get recent predictions
+    query = """
+    SELECT 
+        id,
+        prediction_time,
+        game_date,
+        home_team,
+        away_team,
+        best_bet,
+        recommended_stake,
+        actual_result,
+        profit_loss
+    FROM nhl_prediction_tracking
+    ORDER BY game_date DESC, prediction_time DESC
+    LIMIT 50
+    """
+
+    predictions = pd.read_sql(query, engine)
+
+    if not predictions.empty:
+        # Format the DataFrame for display
+        display_df = predictions.copy()
+        display_df['prediction_time'] = pd.to_datetime(display_df['prediction_time']).dt.strftime('%Y-%m-%d %H:%M')
+        display_df['game_date'] = pd.to_datetime(display_df['game_date']).dt.strftime('%Y-%m-%d')
+
+        # Add styling
+        def style_profit_loss(val):
+            if pd.isna(val):
+                return ''
+            color = 'green' if val > 0 else 'red' if val < 0 else 'black'
+            return f'color: {color}'
+
+        styled_df = display_df.style.applymap(style_profit_loss, subset=['profit_loss'])
+
+        # Display the DataFrame
+        st.dataframe(styled_df)
+
+        # Add update section
+        st.markdown("### Update Result")
+        selected_id = st.selectbox(
+            "Select prediction to update",
+            predictions['id'].tolist(),
+            format_func=lambda
+                x: f"ID {x}: {predictions[predictions['id'] == x]['home_team'].iloc[0]} vs {predictions[predictions['id'] == x]['away_team'].iloc[0]} ({predictions[predictions['id'] == x]['game_date'].iloc[0]})"
+        )
+
+        if selected_id:
+            selected_pred = predictions[predictions['id'] == selected_id].iloc[0]
+
+            col1, col2 = st.columns(2)
+            with col1:
+                result = st.selectbox(
+                    "Result",
+                    ['Home Win', 'Away Win', 'Draw']
+                )
+                score = st.text_input(
+                    "Score (format: 3-2)",
+                    placeholder="Enter final score"
+                )
+
+            with col2:
+                if selected_pred['best_bet'] and selected_pred['recommended_stake']:
+                    if result == 'Home Win' and selected_pred['best_bet'] == 'Home':
+                        profit = float(selected_pred['recommended_stake']) * (float(selected_pred['home_odds']) - 1)
+                    elif result == 'Away Win' and selected_pred['best_bet'] == 'Away':
+                        profit = float(selected_pred['recommended_stake']) * (float(selected_pred['away_odds']) - 1)
+                    elif result == 'Draw' and selected_pred['best_bet'] == 'Draw':
+                        profit = float(selected_pred['recommended_stake']) * (float(selected_pred['draw_odds']) - 1)
+                    else:
+                        profit = -float(selected_pred['recommended_stake'])
+
+                    st.metric(
+                        "Profit/Loss",
+                        f"£{profit:.2f}",
+                        delta=f"{profit / float(selected_pred['recommended_stake']) * 100:.1f}% ROI"
+                    )
+
+            if st.button("Update Result"):
+                update_query = """
+                UPDATE nhl_prediction_tracking
+                SET actual_result = %s,
+                    actual_score = %s,
+                    profit_loss = %s
+                WHERE id = %s
+                """
+
+                try:
+                    with engine.connect() as conn:
+                        conn.execute(
+                            update_query,
+                            (result, score, profit, selected_id)
+                        )
+                    st.success("Result updated successfully!")
+                except Exception as e:
+                    st.error(f"Error updating result: {str(e)}")
+    else:
+        st.info("No predictions found in the database.")
+
+
 def main():
     st.title("NHL Game Predictor 🏒")
 
@@ -586,6 +994,17 @@ def main():
         with st.spinner("Loading model and data..."):
             model = load_model()
             teams = get_teams()
+
+        # Add sidebar navigation
+        st.sidebar.markdown("### Navigation")
+        page = st.sidebar.radio(
+            "Select Page",
+            ["Make Prediction", "View History"]
+        )
+
+        if page == "View History":
+            view_prediction_history()
+            return
 
         # Create main columns
         col1, col2 = st.columns(2)
@@ -635,14 +1054,15 @@ def main():
                     away_prob /= total_prob
                     draw_prob /= total_prob
 
-                    # Add confidence calculation and display
+                    # Calculate confidence score
                     confidence_score = calculate_confidence(
                         [home_prob, away_prob, draw_prob],
                         model,
                         features
                     )
 
-                    add_betting_recommendations(
+                    # Get betting recommendations
+                    betting_info = add_betting_recommendations(
                         st, home_team, away_team,
                         home_prob, away_prob, draw_prob,
                         home_odds, away_odds, draw_odds,
@@ -650,8 +1070,26 @@ def main():
                         confidence_score
                     )
 
-                    # Create tabs for different views
-                    tab1, tab2, tab3, tab4, tab5= st.tabs([
+                    # Store this prediction info for later tracking
+                    prediction_data = {
+                        'prediction_time': datetime.now(),
+                        'home_team': home_team,
+                        'away_team': away_team,
+                        'home_odds': home_odds,
+                        'away_odds': away_odds,
+                        'draw_odds': draw_odds,
+                        'home_prob': home_prob,
+                        'away_prob': away_prob,
+                        'draw_prob': draw_prob,
+                        'confidence_score': confidence_score,
+                        'best_bet': betting_info['best_bet'],
+                        'best_edge': betting_info['best_edge'],
+                        'recommended_stake': betting_info['recommended_stake'],
+                        'market_efficiency': betting_info['market_efficiency']
+                    }
+
+                    # Show prediction results
+                    tab1, tab2, tab3, tab4, tab5 = st.tabs([
                         "Prediction Results",
                         "Team Stats",
                         "Head to Head",
@@ -681,15 +1119,15 @@ def main():
                             if confidence_score >= 0.4:
                                 st.markdown("🟢 **HIGH CONFIDENCE**")
                                 st.markdown(
-                                    f"Strong agreement between models and clear probability distribution (Score: {confidence_score:.2f})")
+                                    f"Strong model agreement and clear probability distribution (Score: {confidence_score:.2f})")
                             elif confidence_score >= 0.25:
                                 st.markdown("🟡 **MEDIUM CONFIDENCE**")
                                 st.markdown(
-                                    f"Moderate agreement between models and probability distribution (Score: {confidence_score:.2f})")
+                                    f"Moderate model agreement and probability distribution (Score: {confidence_score:.2f})")
                             else:
                                 st.markdown("🔴 **LOW CONFIDENCE**")
                                 st.markdown(
-                                    f"Low agreement between models or unclear probability distribution (Score: {confidence_score:.2f})")
+                                    f"Low model agreement or unclear probability distribution (Score: {confidence_score:.2f})")
 
                         # Create visualization
                         fig = create_visualization(
@@ -699,20 +1137,58 @@ def main():
                         st.pyplot(fig)
 
                     with tab2:
-                        # Show team stats
+                        # Show team stats with enhanced metrics
                         col8, col9 = st.columns(2)
                         with col8:
                             st.markdown(f"### {home_team} Statistics")
-                            st.write(format_team_stats(home_team, home_stats))
+                            home_stats_df = pd.DataFrame({
+                                'Metric': [
+                                    'Recent Goals For',
+                                    'Recent Goals Against',
+                                    'Expected Goals',
+                                    'Expected Goals Against',
+                                    'Recent Form',
+                                    'Market Implied Probability'
+                                ],
+                                'Value': [
+                                    f"{float(home_stats['recent_goals_for']):.2f}",
+                                    f"{float(home_stats['recent_goals_against']):.2f}",
+                                    f"{float(home_stats['recent_xgoals_for']):.2f}",
+                                    f"{float(home_stats['recent_xgoals_against']):.2f}",
+                                    f"{betting_info['all_edges']['Home'] * 100:+.1f}%",
+                                    f"{(1 / home_odds / betting_info['market_efficiency']):.1%}"
+                                ]
+                            })
+                            st.table(home_stats_df)
+
                         with col9:
                             st.markdown(f"### {away_team} Statistics")
-                            st.write(format_team_stats(away_team, away_stats))
+                            away_stats_df = pd.DataFrame({
+                                'Metric': [
+                                    'Recent Goals For',
+                                    'Recent Goals Against',
+                                    'Expected Goals',
+                                    'Expected Goals Against',
+                                    'Recent Form',
+                                    'Market Implied Probability'
+                                ],
+                                'Value': [
+                                    f"{float(away_stats['recent_goals_for']):.2f}",
+                                    f"{float(away_stats['recent_goals_against']):.2f}",
+                                    f"{float(away_stats['recent_xgoals_for']):.2f}",
+                                    f"{float(away_stats['recent_xgoals_against']):.2f}",
+                                    f"{betting_info['all_edges']['Away'] * 100:+.1f}%",
+                                    f"{(1 / away_odds / betting_info['market_efficiency']):.1%}"
+                                ]
+                            })
+                            st.table(away_stats_df)
 
                     with tab3:
-                        # Show head to head stats
+                        # Enhanced head to head stats
                         st.markdown("### Head to Head Statistics")
                         if h2h_stats['games_played'] > 0:
-                            col10, col11 = st.columns(2)
+                            # Overall H2H metrics
+                            col10, col11, col12 = st.columns(3)
                             with col10:
                                 st.metric("Total Games", int(h2h_stats['games_played']))
                                 st.metric(f"{home_team} Wins",
@@ -720,57 +1196,243 @@ def main():
                             with col11:
                                 st.metric("Average Total Goals",
                                           f"{h2h_stats['avg_total_goals']:.1f}")
+                                st.metric("Goal STD Dev",
+                                          f"{h2h_stats['std_total_goals']:.1f}")
+                            with col12:
                                 st.metric(f"{away_team} Wins",
                                           int(h2h_stats['away_team_wins']))
+                                draws = (h2h_stats['games_played'] -
+                                         h2h_stats['home_team_wins'] -
+                                         h2h_stats['away_team_wins'])
+                                st.metric("Draws", int(draws))
+
+                            # Recent H2H Meetings
+                            st.markdown("#### Recent Head-to-Head Meetings")
+                            h2h_form = get_form_guide(home_team, away_team)
+
+                            if not h2h_form.empty:
+                                # Create a styled dataframe
+                                def highlight_winner(row):
+                                    """Highlight the winner in the Score column"""
+                                    if row['Winner'] == home_team:
+                                        return ['background-color: #e6ffe6'] * len(row)
+                                    elif row['Winner'] == away_team:
+                                        return ['background-color: #ffe6e6'] * len(row)
+                                    return ['background-color: #f0f0f0'] * len(row)
+
+                                # Apply styling to the dataframe
+                                styled_df = h2h_form.style.apply(highlight_winner, axis=1)
+                                st.dataframe(styled_df)
+
+                                # Add summary statistics
+                                st.markdown("#### Recent Form Analysis")
+                                recent_stats = {
+                                    f"{home_team} Wins": len(h2h_form[h2h_form['Winner'] == home_team]),
+                                    f"{away_team} Wins": len(h2h_form[h2h_form['Winner'] == away_team]),
+                                    "Draws": len(h2h_form[h2h_form['Winner'] == 'Draw'])
+                                }
+
+                                # Display recent form stats
+                                recent_cols = st.columns(3)
+                                for i, (label, value) in enumerate(recent_stats.items()):
+                                    with recent_cols[i]:
+                                        st.metric(
+                                            f"Recent {label}",
+                                            value,
+                                            f"{(value / len(h2h_form)) * 100:.1f}%"
+                                        )
+
+                                # Add form insights
+                                recent_form_insights = []
+
+                                # Check for dominance
+                                if recent_stats[f"{home_team} Wins"] >= 3:
+                                    recent_form_insights.append(
+                                        f"✅ {home_team} has won {recent_stats[f'{home_team} Wins']} "
+                                        f"of the last {len(h2h_form)} meetings"
+                                    )
+                                elif recent_stats[f"{away_team} Wins"] >= 3:
+                                    recent_form_insights.append(
+                                        f"✅ {away_team} has won {recent_stats[f'{away_team} Wins']} "
+                                        f"of the last {len(h2h_form)} meetings"
+                                    )
+
+                                # Display insights
+                                if recent_form_insights:
+                                    st.markdown("#### Form Insights")
+                                    for insight in recent_form_insights:
+                                        st.markdown(insight)
+
                         else:
                             st.info("No recent head-to-head matches found")
 
-                    with tab4:
-                        # Show betting analysis
-                        st.markdown("### Betting Analysis")
-                        if stake > 0:
-                            # Calculate EV for each outcome
-                            home_ev, home_roi = calculate_ev(home_prob, home_odds, stake)
-                            draw_ev, draw_roi = calculate_ev(draw_prob, draw_odds, stake)
-                            away_ev, away_roi = calculate_ev(away_prob, away_odds, stake)
+                            # Show individual team recent form instead
+                            st.markdown("#### Recent Form (Individual Teams)")
 
-                            # Create metrics for each bet
-                            col12, col13, col14 = st.columns(3)
-                            with col12:
-                                st.metric("Home EV", f"£{home_ev:.2f}")
-                                st.metric("Home ROI", f"{home_roi:.1f}%")
+                            col13, col14 = st.columns(2)
                             with col13:
-                                st.metric("Draw EV", f"£{draw_ev:.2f}")
-                                st.metric("Draw ROI", f"{draw_roi:.1f}%")
+                                st.markdown(f"**{home_team} Recent Form**")
+                                home_form = get_team_form(home_team)
+                                if not home_form.empty:
+                                    st.dataframe(home_form)
+                                else:
+                                    st.info("No recent matches found")
+
                             with col14:
-                                st.metric("Away EV", f"£{away_ev:.2f}")
-                                st.metric("Away ROI", f"{away_roi:.1f}%")
+                                st.markdown(f"**{away_team} Recent Form**")
+                                away_form = get_team_form(away_team)
+                                if not away_form.empty:
+                                    st.dataframe(away_form)
+                                else:
+                                    st.info("No recent matches found")
 
-                            # Show best value bet
-                            best_bet = max(
-                                [("Home", home_ev, home_roi, home_odds),
-                                 ("Draw", draw_ev, draw_roi, draw_odds),
-                                 ("Away", away_ev, away_roi, away_odds)],
-                                key=lambda x: x[1]
-                            )
+                    with tab4:
+                        # Enhanced betting analysis
+                        st.markdown("### Betting Analysis")
 
-                            if best_bet[1] > 0:
-                                st.success(
-                                    f"Best Value Bet: {best_bet[0]} "
-                                    f"(EV: £{best_bet[1]:.2f}, "
-                                    f"ROI: {best_bet[2]:.1f}%, "
-                                    f"Odds: {best_bet[3]:.2f})"
+                        # Market efficiency metrics
+                        st.markdown("#### Market Analysis")
+                        market_cols = st.columns(3)
+                        with market_cols[0]:
+                            st.metric("Market Efficiency",
+                                      f"{betting_info['market_efficiency']:.3f}")
+                        with market_cols[1]:
+                            overround = (betting_info['market_efficiency'] - 1) * 100
+                            st.metric("Overround", f"{overround:.1f}%")
+                        with market_cols[2]:
+                            st.metric("Best Edge Found",
+                                      f"{betting_info['best_edge'] * 100:+.1f}%")
+
+                        # Edge analysis for all outcomes
+                        st.markdown("#### Edge Analysis")
+                        edge_cols = st.columns(3)
+                        for i, (outcome, edge) in enumerate(betting_info['all_edges'].items()):
+                            with edge_cols[i]:
+                                implied_prob = 1 / locals()[f"{outcome.lower()}_odds"] / betting_info[
+                                    'market_efficiency']
+                                model_prob = locals()[f"{outcome.lower()}_prob"]
+                                st.metric(
+                                    f"{outcome} Edge",
+                                    f"{edge * 100:+.1f}%",
+                                    f"Model: {model_prob:.1%} vs Market: {implied_prob:.1%}"
                                 )
-                            else:
-                                st.warning("No positive EV bets available")
+
+                        # Stake recommendations
+                        if betting_info['best_bet']:
+                            st.markdown("#### Stake Recommendation")
+                            stake_cols = st.columns(2)
+                            with stake_cols[0]:
+                                st.metric("Recommended Bet", betting_info['best_bet'])
+                            with stake_cols[1]:
+                                st.metric("Recommended Stake",
+                                          f"£{betting_info['recommended_stake']:.2f}")
                         else:
-                            st.warning("Please enter a stake amount for betting analysis")
+                            st.warning("No bet recommended based on current edges and confidence")
 
                     with tab5:
-                        add_risk_assessment(st, home_prob, away_prob, draw_prob,
-                                         h2h_stats, home_stats, away_stats)
-                        add_key_insights(st, home_team, away_team,
-                                       home_stats, away_stats, h2h_stats)
+                        # Enhanced risk assessment
+                        st.markdown("### Risk Assessment")
+
+                        # Calculate risk metrics
+                        prob_spread = max(home_prob, away_prob, draw_prob) - min(home_prob, away_prob, draw_prob)
+                        form_difference = abs(
+                            float(home_stats['recent_goals_for']) - float(away_stats['recent_goals_for']))
+                        h2h_sample_size = int(h2h_stats['games_played'])
+
+                        # Display risk metrics
+                        risk_cols = st.columns(3)
+                        with risk_cols[0]:
+                            st.metric("Probability Spread", f"{prob_spread:.1%}")
+                        with risk_cols[1]:
+                            st.metric("Form Difference", f"{form_difference:+.1f}")
+                        with risk_cols[2]:
+                            st.metric("H2H Sample Size", h2h_sample_size)
+
+                        # Risk factors
+                        st.markdown("#### Risk Factors")
+                        risk_factors = []
+
+                        if prob_spread < 0.15:
+                            risk_factors.append("Close probability spread indicates uncertain outcome")
+                        if form_difference < 0.5:
+                            risk_factors.append("Teams showing similar recent form")
+                        if h2h_sample_size < 3:
+                            risk_factors.append("Limited head-to-head history")
+                        if confidence_score < 0.25:
+                            risk_factors.append("Low model confidence")
+                        if betting_info['market_efficiency'] > 1.1:
+                            risk_factors.append("High market overround")
+
+                        if risk_factors:
+                            for factor in risk_factors:
+                                st.warning(f"⚠️ {factor}")
+                        else:
+                            st.success("✅ No significant risk factors identified")
+
+                        # Add key insights
+                        st.markdown("#### Key Insights")
+                        insights = []
+
+                        # Form comparison
+                        if float(home_stats['recent_goals_for']) > float(away_stats['recent_goals_for']) + 0.5:
+                            insights.append(f"✅ {home_team} showing stronger recent scoring form")
+                        elif float(away_stats['recent_goals_for']) > float(home_stats['recent_goals_for']) + 0.5:
+                            insights.append(f"✅ {away_team} showing stronger recent scoring form")
+
+                        # Defense comparison
+                        if float(home_stats['recent_goals_against']) < float(away_stats['recent_goals_against']) - 0.5:
+                            insights.append(f"✅ {home_team} showing stronger defensive form")
+                        elif float(away_stats['recent_goals_against']) < float(
+                                home_stats['recent_goals_against']) - 0.5:
+                            insights.append(f"✅ {away_team} showing stronger defensive form")
+
+                        # Edge insights
+                        best_edge = max(betting_info['all_edges'].values())
+                        if best_edge > 0.15:
+                            insights.append(f"✅ Strong edge found ({best_edge * 100:.1f}%)")
+                        elif best_edge > 0.10:
+                            insights.append(f"✅ Moderate edge found ({best_edge * 100:.1f}%)")
+
+                        if insights:
+                            for insight in insights:
+                                st.markdown(insight)
+                        else:
+                            st.info("No clear advantages identified between teams")
+
+                    # Add save prediction button in a new container
+                    st.markdown("---")
+                    save_container = st.container()
+                    with save_container:
+                        col_save1, col_save2 = st.columns([2, 1])
+
+                        with col_save1:
+                            game_date = st.date_input(
+                                "Game Date",
+                                value=datetime.now().date(),
+                                min_value=datetime.now().date()
+                            )
+                            notes = st.text_area(
+                                "Notes (optional)",
+                                placeholder="Add any additional notes about this prediction..."
+                            )
+
+                        with col_save2:
+                            st.markdown("### Save Prediction")
+                            if st.button("📝 Save Prediction to Database", type="secondary"):
+                                # Update prediction data with game date and notes
+                                prediction_data['game_date'] = game_date
+                                prediction_data['notes'] = notes if notes else None
+
+                                # Save to database
+                                success, message = save_prediction_to_db(
+                                    init_connection(),
+                                    prediction_data
+                                )
+
+                                if success:
+                                    st.success(message)
+                                else:
+                                    st.error(message)
 
         # Add footer with additional information
         st.markdown("---")
