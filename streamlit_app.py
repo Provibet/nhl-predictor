@@ -11,6 +11,164 @@ from googleapiclient.http import MediaIoBaseDownload
 import io
 from datetime import datetime
 
+
+def add_confidence_indicators(st, home_prob, away_prob, draw_prob):
+    """Add clear visual confidence indicators"""
+    st.markdown("### 🎯 Confidence Analysis")
+
+    # Calculate overall confidence level
+    max_prob = max(home_prob, away_prob, draw_prob)
+
+    # Create confidence meter
+    col1, col2 = st.columns([1, 2])
+    with col1:
+        st.markdown("**Confidence Level:**")
+    with col2:
+        if max_prob >= 0.90:
+            st.markdown("🟢 **VERY HIGH** (90%+)")
+        elif max_prob >= 0.80:
+            st.markdown("🟡 **HIGH** (80-90%)")
+        elif max_prob >= 0.70:
+            st.markdown("🟠 **MEDIUM** (70-80%)")
+        else:
+            st.markdown("🔴 **LOW** (<70%)")
+
+
+def add_betting_recommendations(st, home_team, away_team, home_prob, away_prob, draw_prob,
+                                home_odds, away_odds, draw_odds, stake):
+    """Add clear betting recommendations with reasoning"""
+    st.markdown("### 💰 Betting Recommendations")
+
+    # Calculate EVs
+    home_ev = (home_prob * (home_odds - 1) * stake) - ((1 - home_prob) * stake)
+    away_ev = (away_prob * (away_odds - 1) * stake) - ((1 - away_prob) * stake)
+    draw_ev = (draw_prob * (draw_odds - 1) * stake) - ((1 - draw_prob) * stake)
+
+    # Calculate ROI percentages
+    home_roi = (home_ev / stake) * 100
+    away_roi = (away_ev / stake) * 100
+    draw_roi = (draw_ev / stake) * 100
+
+    # Create recommendation box
+    best_bet = max(
+        ("Home", home_ev, home_roi, home_prob, home_odds, home_team),
+        ("Away", away_ev, away_roi, away_prob, away_odds, away_team),
+        ("Draw", draw_ev, draw_roi, draw_prob, draw_odds, "Draw"),
+        key=lambda x: x[1]
+    )
+
+    if best_bet[1] > 0:  # If best EV is positive
+        recommendation_box = st.container()
+        with recommendation_box:
+            st.markdown(
+                f"""
+                <div style='background-color: #1a472a; padding: 20px; border-radius: 10px;'>
+                    <h4 style='color: white; margin-top: 0;'>🎯 RECOMMENDED BET</h4>
+                    <p style='color: white; font-size: 18px;'><strong>{best_bet[5]}</strong> ({best_bet[0]})</p>
+                    <ul style='color: white;'>
+                        <li>Expected Value: £{best_bet[1]:.2f}</li>
+                        <li>ROI: {best_bet[2]:.1f}%</li>
+                        <li>Win Probability: {best_bet[3]:.1%}</li>
+                        <li>Odds: {best_bet[4]:.2f}</li>
+                    </ul>
+                </div>
+                """,
+                unsafe_allow_html=True
+            )
+    else:
+        st.warning("⚠️ No positive expected value bets found. Consider skipping this game.")
+
+    # Add detailed value breakdown
+    st.markdown("#### Value Breakdown")
+    col1, col2, col3 = st.columns(3)
+
+    with col1:
+        st.metric(
+            f"{home_team} (Home)",
+            f"£{home_ev:.2f} EV",
+            f"{home_roi:.1f}% ROI",
+            delta_color="normal" if home_ev > 0 else "off"
+        )
+
+    with col2:
+        st.metric(
+            "Draw",
+            f"£{draw_ev:.2f} EV",
+            f"{draw_roi:.1f}% ROI",
+            delta_color="normal" if draw_ev > 0 else "off"
+        )
+
+    with col3:
+        st.metric(
+            f"{away_team} (Away)",
+            f"£{away_ev:.2f} EV",
+            f"{away_roi:.1f}% ROI",
+            delta_color="normal" if away_ev > 0 else "off"
+        )
+
+
+def add_risk_assessment(st, home_prob, away_prob, draw_prob, h2h_stats, home_stats, away_stats):
+    """Add risk assessment indicators"""
+    st.markdown("### ⚠️ Risk Assessment")
+
+    # Calculate risk factors
+    risk_factors = []
+
+    # Check probability spread
+    prob_spread = max(home_prob, away_prob, draw_prob) - min(home_prob, away_prob, draw_prob)
+    if prob_spread < 0.15:
+        risk_factors.append("Close probability spread indicates uncertain outcome")
+
+    # Check recent form consistency
+    if abs(home_stats['recent_goals_for'] - away_stats['recent_goals_for']) < 0.5:
+        risk_factors.append("Teams showing similar recent form")
+
+    # Check head-to-head history
+    if h2h_stats['games_played'] < 3:
+        risk_factors.append("Limited head-to-head history")
+
+    # Display risk factors
+    if risk_factors:
+        for factor in risk_factors:
+            st.warning(f"⚠️ {factor}")
+    else:
+        st.success("✅ No significant risk factors identified")
+
+
+def add_key_insights(st, home_team, away_team, home_stats, away_stats, h2h_stats):
+    """Add key insights section"""
+    st.markdown("### 🔍 Key Insights")
+
+    insights = []
+
+    # Form comparison
+    if home_stats['recent_goals_for'] > away_stats['recent_goals_for']:
+        insights.append(f"✅ {home_team} showing stronger recent scoring form")
+    elif away_stats['recent_goals_for'] > home_stats['recent_goals_for']:
+        insights.append(f"✅ {away_team} showing stronger recent scoring form")
+
+    # Defense comparison
+    if home_stats['recent_goals_against'] < away_stats['recent_goals_against']:
+        insights.append(f"✅ {home_team} showing stronger defensive form")
+    elif away_stats['recent_goals_against'] < home_stats['recent_goals_against']:
+        insights.append(f"✅ {away_team} showing stronger defensive form")
+
+    # H2H dominance
+    if h2h_stats['games_played'] > 0:
+        home_win_rate = h2h_stats['home_team_wins'] / h2h_stats['games_played']
+        if home_win_rate > 0.6:
+            insights.append(f"✅ {home_team} has strong H2H record ({home_win_rate:.0%} win rate)")
+        elif home_win_rate < 0.4:
+            insights.append(f"✅ {away_team} has strong H2H record ({(1 - home_win_rate):.0%} win rate)")
+
+    # Display insights
+    if insights:
+        for insight in insights:
+            st.markdown(insight)
+    else:
+        st.info("No clear advantages identified between teams")
+
+
 # Page config
 st.set_page_config(
     page_title="NHL Game Predictor",
@@ -450,12 +608,22 @@ def main():
                     away_prob /= total_prob
                     draw_prob /= total_prob
 
+                    add_confidence_indicators(st, home_prob, away_prob, draw_prob)
+
+                    add_betting_recommendations(
+                        st, home_team, away_team,
+                        home_prob, away_prob, draw_prob,
+                        home_odds, away_odds, draw_odds,
+                        stake
+                    )
+
                     # Create tabs for different views
-                    tab1, tab2, tab3, tab4 = st.tabs([
+                    tab1, tab2, tab3, tab4, tab5= st.tabs([
                         "Prediction Results",
                         "Team Stats",
                         "Head to Head",
-                        "Betting Analysis"
+                        "Betting Analysis",
+                        "Risk Assessment"
                     ])
 
                     with tab1:
@@ -559,6 +727,12 @@ def main():
                                 st.warning("No positive EV bets available")
                         else:
                             st.warning("Please enter a stake amount for betting analysis")
+
+                    with tab5:
+                        add_risk_assessment(st, home_prob, away_prob, draw_prob,
+                                         h2h_stats, home_stats, away_stats)
+                        add_key_insights(st, home_team, away_team,
+                                       home_stats, away_stats, h2h_stats)
 
         # Add footer with additional information
         st.markdown("---")
