@@ -19,7 +19,7 @@ import warnings
 warnings.filterwarnings('ignore')
 
 # Set matplotlib style for better visualizations
-plt.style.use('seaborn')
+plt.style.use('ggplot')
 
 def add_betting_recommendations(st, home_team, away_team, home_prob, away_prob, draw_prob,
                                 home_odds, away_odds, draw_odds, stake, confidence_score):
