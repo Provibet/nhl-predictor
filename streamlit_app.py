@@ -12,30 +12,9 @@ import io
 from datetime import datetime
 
 
-def add_confidence_indicators(st, home_prob, away_prob, draw_prob):
-    """Add clear visual confidence indicators"""
-    st.markdown("### 🎯 Confidence Analysis")
-
-    # Calculate overall confidence level
-    max_prob = max(home_prob, away_prob, draw_prob)
-
-    # Create confidence meter
-    col1, col2 = st.columns([1, 2])
-    with col1:
-        st.markdown("**Confidence Level:**")
-    with col2:
-        if max_prob >= 0.90:
-            st.markdown("🟢 **VERY HIGH** (90%+)")
-        elif max_prob >= 0.80:
-            st.markdown("🟡 **HIGH** (80-90%)")
-        elif max_prob >= 0.70:
-            st.markdown("🟠 **MEDIUM** (70-80%)")
-        else:
-            st.markdown("🔴 **LOW** (<70%)")
-
-
 def add_betting_recommendations(st, home_team, away_team, home_prob, away_prob, draw_prob,
-                                home_odds, away_odds, draw_odds, stake):
+                                home_odds, away_odds, draw_odds, stake,
+                                confidence_score):  # Add confidence_score parameter
     """Add clear betting recommendations with reasoning"""
     st.markdown("### 💰 Betting Recommendations")
 
@@ -43,6 +22,17 @@ def add_betting_recommendations(st, home_team, away_team, home_prob, away_prob, 
     home_ev = (home_prob * (home_odds - 1) * stake) - ((1 - home_prob) * stake)
     away_ev = (away_prob * (away_odds - 1) * stake) - ((1 - away_prob) * stake)
     draw_ev = (draw_prob * (draw_odds - 1) * stake) - ((1 - draw_prob) * stake)
+
+    # Adjust EVs based on confidence
+    if confidence_score < 0.25:  # Low confidence
+        home_ev *= 0.5  # Reduce expected value for low confidence predictions
+        away_ev *= 0.5
+        draw_ev *= 0.5
+    elif confidence_score < 0.4:  # Medium confidence
+        home_ev *= 0.75
+        away_ev *= 0.75
+        draw_ev *= 0.75
+    # High confidence (>= 0.4) uses full EV
 
     # Calculate ROI percentages
     home_roi = (home_ev / stake) * 100
@@ -60,9 +50,11 @@ def add_betting_recommendations(st, home_team, away_team, home_prob, away_prob, 
     if best_bet[1] > 0:  # If best EV is positive
         recommendation_box = st.container()
         with recommendation_box:
+            confidence_color = "#1a472a" if confidence_score >= 0.4 else (
+                "#2a4d1a" if confidence_score >= 0.25 else "#4d1a1a")
             st.markdown(
                 f"""
-                <div style='background-color: #1a472a; padding: 20px; border-radius: 10px;'>
+                <div style='background-color: {confidence_color}; padding: 20px; border-radius: 10px;'>
                     <h4 style='color: white; margin-top: 0;'>🎯 RECOMMENDED BET</h4>
                     <p style='color: white; font-size: 18px;'><strong>{best_bet[5]}</strong> ({best_bet[0]})</p>
                     <ul style='color: white;'>
@@ -70,11 +62,18 @@ def add_betting_recommendations(st, home_team, away_team, home_prob, away_prob, 
                         <li>ROI: {best_bet[2]:.1f}%</li>
                         <li>Win Probability: {best_bet[3]:.1%}</li>
                         <li>Odds: {best_bet[4]:.2f}</li>
+                        <li>Confidence Score: {confidence_score:.2f}</li>
                     </ul>
                 </div>
                 """,
                 unsafe_allow_html=True
             )
+
+        # Add confidence-based warning if needed
+        if confidence_score < 0.25:
+            st.warning("⚠️ Low confidence prediction - consider reducing stake or skipping")
+        elif confidence_score < 0.4:
+            st.info("ℹ️ Medium confidence prediction - consider reducing stake")
     else:
         st.warning("⚠️ No positive expected value bets found. Consider skipping this game.")
 
@@ -551,6 +550,34 @@ def create_visualization(home_team, away_team, home_stats, away_stats, probabili
         raise
 
 
+def calculate_confidence(probabilities, ensemble_model, features):
+    """
+    Calculate prediction confidence using probability spread and ensemble agreement
+    """
+    home_prob, away_prob, draw_prob = probabilities
+
+    # Method 1: Check probability spread
+    prob_spread = max(home_prob, away_prob, draw_prob) - min(home_prob, away_prob, draw_prob)
+
+    # Method 2: Check ensemble agreement
+    try:
+        individual_predictions = [
+            ensemble_model.estimators_[0].predict_proba(features)[0],  # XGBoost
+            ensemble_model.estimators_[1].predict_proba(features)[0],  # LightGBM
+            ensemble_model.estimators_[2].predict_proba(features)[0]  # CatBoost
+        ]
+
+        # Calculate agreement between models
+        model_agreement = np.std([np.argmax(pred) for pred in individual_predictions])
+
+        # Combine factors
+        confidence_score = (prob_spread * 0.7) + ((1 - model_agreement) * 0.3)
+    except:
+        # Fallback if ensemble details aren't accessible
+        confidence_score = prob_spread
+
+    return confidence_score
+
 def main():
     st.title("NHL Game Predictor 🏒")
 
@@ -608,13 +635,19 @@ def main():
                     away_prob /= total_prob
                     draw_prob /= total_prob
 
-                    add_confidence_indicators(st, home_prob, away_prob, draw_prob)
+                    # Add confidence calculation and display
+                    confidence_score = calculate_confidence(
+                        [home_prob, away_prob, draw_prob],
+                        model,
+                        features
+                    )
 
                     add_betting_recommendations(
                         st, home_team, away_team,
                         home_prob, away_prob, draw_prob,
                         home_odds, away_odds, draw_odds,
-                        stake
+                        stake,
+                        confidence_score
                     )
 
                     # Create tabs for different views
@@ -639,19 +672,24 @@ def main():
                         with col7:
                             st.metric("Away Win", f"{away_prob:.1%}")
 
-                        # Show confidence indicator
-                        predicted_outcome = max(
-                            [("Home Win", home_prob),
-                             ("Draw", draw_prob),
-                             ("Away Win", away_prob)],
-                            key=lambda x: x[1]
-                        )
-
-                        confidence = predicted_outcome[1]
-                        if confidence >= 0.65:
-                            st.success("🌟 HIGH CONFIDENCE PREDICTION 🌟")
-                        else:
-                            st.info("Standard Confidence Prediction")
+                        # Create a confidence meter
+                        st.markdown("### 🎯 Prediction Confidence")
+                        confidence_col1, confidence_col2 = st.columns([1, 3])
+                        with confidence_col1:
+                            st.markdown("**Level:**")
+                        with confidence_col2:
+                            if confidence_score >= 0.4:
+                                st.markdown("🟢 **HIGH CONFIDENCE**")
+                                st.markdown(
+                                    f"Strong agreement between models and clear probability distribution (Score: {confidence_score:.2f})")
+                            elif confidence_score >= 0.25:
+                                st.markdown("🟡 **MEDIUM CONFIDENCE**")
+                                st.markdown(
+                                    f"Moderate agreement between models and probability distribution (Score: {confidence_score:.2f})")
+                            else:
+                                st.markdown("🔴 **LOW CONFIDENCE**")
+                                st.markdown(
+                                    f"Low agreement between models or unclear probability distribution (Score: {confidence_score:.2f})")
 
                         # Create visualization
                         fig = create_visualization(
