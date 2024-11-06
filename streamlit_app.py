@@ -34,8 +34,8 @@ def add_betting_recommendations(st, home_team, away_team, home_prob, away_prob, 
 
     # Define the underdog confidence thresholds and required odds differentials
     underdog_thresholds = {
-        30: 2.95,
-        31: 0.75,
+        30: 12.95,  # 30 and below
+        31: 10.75,
         32: 8.83,
         33: 7.17,
         34: 5.75,
@@ -50,6 +50,7 @@ def add_betting_recommendations(st, home_team, away_team, home_prob, away_prob, 
         43: 0.47,
         44: 0.35,
         45: 0.25
+        # 46 and above: 0
     }
 
     # Check for underdog override
