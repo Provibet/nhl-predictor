@@ -46,6 +46,45 @@ def load_model():
     file_handle.seek(0)
     return joblib.load(file_handle)
 
+# Team logo mappings
+# Team logo mappings
+team_logos = {
+    "Anaheim Ducks": "https://loodibee.com/wp-content/uploads/nhl-anaheim-ducks-logo.png",
+    "Arizona Coyotes": "https://loodibee.com/wp-content/uploads/nhl-arizona-coyotes-logo.png",
+    "Utah NHL Team": "https://loodibee.com/wp-content/uploads/NHL-Utah-Hockey-Club-Logo.png",  # Added this
+    "Utah Hockey Club": "https://loodibee.com/wp-content/uploads/NHL-Utah-Hockey-Club-Logo.png",  # And this
+    "Boston Bruins": "https://loodibee.com/wp-content/uploads/nhl-boston-bruins-logo.png",
+    "Buffalo Sabres": "https://loodibee.com/wp-content/uploads/nhl-buffalo-sabres-logo.png",
+    "Calgary Flames": "https://loodibee.com/wp-content/uploads/nhl-calgary-flames-logo.png",
+    "Carolina Hurricanes": "https://loodibee.com/wp-content/uploads/nhl-carolina-hurricanes-logo.png",
+    "Chicago Blackhawks": "https://loodibee.com/wp-content/uploads/nhl-chicago-blackhawks-logo.png",
+    "Colorado Avalanche": "https://loodibee.com/wp-content/uploads/nhl-colorado-avalanche-logo.png",
+    "Columbus Blue Jackets": "https://loodibee.com/wp-content/uploads/nhl-columbus-blue-jackets-logo.png",
+    "Dallas Stars": "https://loodibee.com/wp-content/uploads/nhl-dallas-stars-logo.png",
+    "Detroit Red Wings": "https://loodibee.com/wp-content/uploads/nhl-detroit-red-wings-logo.png",
+    "Edmonton Oilers": "https://loodibee.com/wp-content/uploads/nhl-edmonton-oilers-logo.png",
+    "Florida Panthers": "https://loodibee.com/wp-content/uploads/nhl-florida-panthers-logo.png",
+    "Los Angeles Kings": "https://loodibee.com/wp-content/uploads/nhl-los-angeles-kings-logo.png",
+    "Minnesota Wild": "https://loodibee.com/wp-content/uploads/nhl-minnesota-wild-logo.png",
+    "Montreal Canadiens": "https://loodibee.com/wp-content/uploads/nhl-montreal-canadiens-logo.png",
+    "Nashville Predators": "https://loodibee.com/wp-content/uploads/nhl-nashville-predators-logo.png",
+    "New Jersey Devils": "https://loodibee.com/wp-content/uploads/nhl-new-jersey-devils-logo.png",
+    "New York Islanders": "https://loodibee.com/wp-content/uploads/nhl-new-york-islanders-logo.png",
+    "New York Rangers": "https://loodibee.com/wp-content/uploads/nhl-new-york-rangers-logo.png",
+    "Ottawa Senators": "https://loodibee.com/wp-content/uploads/nhl-ottawa-senators-logo.png",
+    "Philadelphia Flyers": "https://loodibee.com/wp-content/uploads/nhl-philadelphia-flyers-logo.png",
+    "Pittsburgh Penguins": "https://loodibee.com/wp-content/uploads/nhl-pittsburgh-penguins-logo.png",
+    "San Jose Sharks": "https://loodibee.com/wp-content/uploads/nhl-san-jose-sharks-logo.png",
+    "Seattle Kraken": "https://loodibee.com/wp-content/uploads/nhl-seattle-kraken-logo.png",
+    "St. Louis Blues": "https://loodibee.com/wp-content/uploads/nhl-st-louis-blues-logo.png",
+    "Tampa Bay Lightning": "https://loodibee.com/wp-content/uploads/nhl-tampa-bay-lightning-logo.png",
+    "Toronto Maple Leafs": "https://loodibee.com/wp-content/uploads/nhl-toronto-maple-leafs-logo.png",
+    "Vancouver Canucks": "https://loodibee.com/wp-content/uploads/nhl-vancouver-canucks-logo.png",
+    "Vegas Golden Knights": "https://loodibee.com/wp-content/uploads/nhl-vegas-golden-knights-logo.png",
+    "Washington Capitals": "https://loodibee.com/wp-content/uploads/nhl-washington-capitals-logo.png",
+    "Winnipeg Jets": "https://loodibee.com/wp-content/uploads/nhl-winnipeg-jets-logo.png"
+}
+
 # Basic helper functions
 @st.cache_data
 def get_teams():
@@ -345,15 +384,17 @@ st.markdown("""
 
 # Animation helper functions
 def animated_loading():
-    with st.spinner(""):
+    loading_placeholder = st.empty()
+    with loading_placeholder:
         st.markdown("""
             <div style="text-align: center;">
                 <span class="loader"></span>
                 <p>Analyzing matchup data...</p>
             </div>
             """,
-                    unsafe_allow_html=True
-                    )
+            unsafe_allow_html=True
+        )
+    return loading_placeholder
 
 
 def add_animated_probability_bars(home_prob, away_prob, draw_prob):
@@ -390,6 +431,32 @@ def add_animated_stats_box(title, stats_dict):
             </ul>
         </div>
         """, unsafe_allow_html=True)
+
+
+# Add the new display_team_matchup function here
+def display_team_matchup(home_team, away_team):
+    col1, col2, col3 = st.columns([1, 0.2, 1])
+
+    with col1:
+        st.markdown(f"""
+            <div style="display: flex; justify-content: flex-end; align-items: center;">
+                <img src="{team_logos.get(home_team, '')}" style="max-width: 150px; height: auto;">
+            </div>
+            """, unsafe_allow_html=True)
+
+    with col2:
+        st.markdown("""
+            <div style="display: flex; justify-content: center; align-items: center; height: 100%;">
+                <h2 style="margin: 0;">VS</h2>
+            </div>
+            """, unsafe_allow_html=True)
+
+    with col3:
+        st.markdown(f"""
+            <div style="display: flex; justify-content: flex-start; align-items: center;">
+                <img src="{team_logos.get(away_team, '')}" style="max-width: 150px; height: auto;">
+            </div>
+            """, unsafe_allow_html=True)
 
 
 def add_confidence_indicators(st, home_prob, away_prob, draw_prob):
@@ -620,6 +687,122 @@ def add_betting_recommendations(st, home_team, away_team, home_prob, away_prob, 
         )
 
 
+def create_visualization(home_team, away_team, home_stats, away_stats, probabilities, h2h_stats):
+    """Create visualization charts"""
+    try:
+        fig = plt.Figure(figsize=(12, 8), dpi=100)
+
+        # Create 2x2 subplots
+        gs = fig.add_gridspec(2, 2, hspace=0.3, wspace=0.3)
+
+        # 1. Prediction Probability Pie Chart
+        ax1 = fig.add_subplot(gs[0, 0])
+        labels = [
+            f'{away_team}\n{probabilities[0]:.1%}',
+            f'{home_team}\n{probabilities[1]:.1%}',
+            f'Draw\n{probabilities[2]:.1%}'
+        ]
+        colors = ['#ff9999', '#66b3ff', '#99ff99']
+        ax1.pie(probabilities, labels=labels, colors=colors, autopct='%1.1f%%')
+        ax1.set_title('Prediction Probabilities')
+
+        # 2. Recent Form Comparison Bar Chart
+        ax2 = fig.add_subplot(gs[0, 1])
+        metrics = ['Goals', 'xGoals', 'HD Goals']
+        home_values = [
+            float(safe_get(home_stats, 'recent_goals_for', 2.5)),
+            float(safe_get(home_stats, 'recent_xgoals_for', 2.5)),
+            float(safe_get(home_stats, 'recent_hd_goals_for', 1.0))
+        ]
+        away_values = [
+            float(safe_get(away_stats, 'recent_goals_for', 2.5)),
+            float(safe_get(away_stats, 'recent_xgoals_for', 2.5)),
+            float(safe_get(away_stats, 'recent_hd_goals_for', 1.0))
+        ]
+
+        x = np.arange(len(metrics))
+        width = 0.35
+        ax2.bar(x - width/2, home_values, width, label=home_team, color='#66b3ff')
+        ax2.bar(x + width/2, away_values, width, label=away_team, color='#ff9999')
+        ax2.set_xticks(x)
+        ax2.set_xticklabels(metrics)
+        ax2.legend()
+        ax2.set_title('Recent Offensive Metrics')
+
+        # 3. Advanced Stats Radar Chart
+        ax3 = fig.add_subplot(gs[1, 0], projection='polar')
+        categories = ['Goals/Game', 'Shots/Game', 'HD Chances', 'HD Goals', 'Win Rate']
+
+        # Scale factors
+        SHOTS_SCALE = 100 / 40
+        GOALS_SCALE = 100 / 5
+        HD_SCALE = 100 / 20
+        HDG_SCALE = 100 / 5
+
+        # Get values with proper scaling
+        home_values = [
+            float(safe_get(home_stats, 'recent_goals_for', 3)) * GOALS_SCALE,
+            float(safe_get(home_stats, 'recent_shots_for', 30)) * SHOTS_SCALE,
+            float(safe_get(home_stats, 'recent_hd_shots_for', 10)) * HD_SCALE,
+            float(safe_get(home_stats, 'recent_hd_goals_for', 2)) * HDG_SCALE,
+            float(safe_get(home_stats, 'games_played', 1)) * 100
+        ]
+
+        away_values = [
+            float(safe_get(away_stats, 'recent_goals_for', 3)) * GOALS_SCALE,
+            float(safe_get(away_stats, 'recent_shots_for', 30)) * SHOTS_SCALE,
+            float(safe_get(away_stats, 'recent_hd_shots_for', 10)) * HD_SCALE,
+            float(safe_get(away_stats, 'recent_hd_goals_for', 2)) * HDG_SCALE,
+            float(safe_get(away_stats, 'games_played', 1)) * 100
+        ]
+
+        # Normalize values
+        home_values = np.clip(home_values, 0, 100)
+        away_values = np.clip(away_values, 0, 100)
+
+        angles = np.linspace(0, 2*np.pi, len(categories), endpoint=False)
+        angles = np.concatenate((angles, [angles[0]]))
+        home_values = np.concatenate((home_values, [home_values[0]]))
+        away_values = np.concatenate((away_values, [away_values[0]]))
+
+        ax3.plot(angles, home_values, 'o-', label=home_team, color='#66b3ff', linewidth=2)
+        ax3.fill(angles, home_values, alpha=0.25, color='#66b3ff')
+        ax3.plot(angles, away_values, 'o-', label=away_team, color='#ff9999', linewidth=2)
+        ax3.fill(angles, away_values, alpha=0.25, color='#ff9999')
+
+        ax3.set_xticks(angles[:-1])
+        ax3.set_xticklabels(categories)
+        ax3.set_rticks([20, 40, 60, 80, 100])
+        ax3.set_rlabel_position(0)
+        ax3.legend(loc='upper right', bbox_to_anchor=(0.1, 0.1))
+        ax3.set_title('Key Performance Metrics', pad=15)
+        ax3.grid(True)
+
+        # 4. H2H Results Summary
+        ax4 = fig.add_subplot(gs[1, 1])
+        if h2h_stats['games_played'] > 0:
+            h2h_labels = [f'{home_team}\nWins', f'{away_team}\nWins', 'Draws']
+            h2h_values = [
+                h2h_stats['home_team_wins'],
+                h2h_stats['away_team_wins'],
+                h2h_stats['games_played'] - h2h_stats['home_team_wins'] - h2h_stats['away_team_wins']
+            ]
+            ax4.bar(h2h_labels, h2h_values, color=['#66b3ff', '#ff9999', '#99ff99'])
+            ax4.set_title('Head-to-Head Results')
+        else:
+            ax4.text(0.5, 0.5, 'No H2H Data Available',
+                     horizontalalignment='center',
+                     verticalalignment='center')
+            ax4.set_xticks([])
+            ax4.set_yticks([])
+
+        fig.tight_layout()
+        return fig
+
+    except Exception as e:
+        st.error(f"Failed to create visualization: {str(e)}")
+        raise
+
 def main():
     # Animated title
     st.markdown('<h1 class="title-animation">NHL Game Predictor 🏒</h1>', unsafe_allow_html=True)
@@ -696,7 +879,7 @@ def main():
                 st.error("Please select different teams")
             else:
                 # Show loading animation
-                animated_loading()
+                loading_placeholder = animated_loading()
 
                 # Get features and stats
                 features, home_stats, away_stats, h2h_stats = prepare_features(
@@ -717,6 +900,9 @@ def main():
                 away_prob /= total_prob
                 draw_prob /= total_prob
 
+                # Clear the loading animation
+                loading_placeholder.empty()
+
                 # Create tabs for different views
                 tab1, tab2, tab3, tab4, tab5 = st.tabs([
                     "Prediction Results",
@@ -728,7 +914,21 @@ def main():
 
                 with tab1:
                     st.markdown('<h3 class="fade-in">Prediction Results</h3>', unsafe_allow_html=True)
+
+                    # Add team logos
+                    display_team_matchup(home_team, away_team)
+
+                    # Add a separator
+                    st.markdown("<hr>", unsafe_allow_html=True)
+
                     add_animated_probability_bars(home_prob, away_prob, draw_prob)
+
+                    # Add visualization
+                    fig = create_visualization(
+                        home_team, away_team, home_stats, away_stats,
+                        [away_prob, home_prob, draw_prob], h2h_stats
+                    )
+                    st.pyplot(fig)
 
                     # Show animated stats boxes
                     col5, col6 = st.columns(2)
