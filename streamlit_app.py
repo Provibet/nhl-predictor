@@ -525,8 +525,9 @@ def add_animated_stats_box(title, stats_dict):
 
 # Add the new display_team_matchup function here
 def display_team_matchup(home_team, away_team, recommended_team=None):
-    # First add a container with lighter background
-    st.markdown("""
+    # First add a container with lighter background and recommended team name
+    recommendation_text = f"Recommended Bet: {recommended_team}" if recommended_team else ""
+    st.markdown(f"""
         <div style="
             background: linear-gradient(to bottom, #1a1f2c, #161922);
             border-radius: 15px;
@@ -534,6 +535,9 @@ def display_team_matchup(home_team, away_team, recommended_team=None):
             margin: 20px 0;
             box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
         ">
+        <div style="text-align: center; margin-bottom: 20px; color: #ffd700; font-weight: bold; font-size: 1.2em;">
+            {recommendation_text}
+        </div>
     """, unsafe_allow_html=True)
 
     col1, col2, col3 = st.columns([1, 0.2, 1])
@@ -541,20 +545,20 @@ def display_team_matchup(home_team, away_team, recommended_team=None):
     with col1:
         home_class = "team-logo recommended-team" if home_team == recommended_team else "team-logo"
         highlight_style = """
-            background: radial-gradient(circle at center, rgba(255,215,0,0.1) 0%, transparent 70%);
+            background: radial-gradient(circle at center, rgba(255,215,0,0.1) 0%, rgba(255,255,255,0) 70%);
             padding: 20px;
-            border-radius: 50%;
+            border-radius: 15px;
             display: flex;
             justify-content: center;
             align-items: center;
             min-height: 200px;
-            background-color: rgba(255, 255, 255, 0.05);
+            background-color: rgba(255, 255, 255, 0.03);
         """ if home_team == recommended_team else """
             display: flex;
             justify-content: center;
             align-items: center;
             min-height: 200px;
-            background-color: rgba(255, 255, 255, 0.05);
+            background-color: rgba(255, 255, 255, 0.03);
             border-radius: 15px;
         """
 
@@ -576,20 +580,20 @@ def display_team_matchup(home_team, away_team, recommended_team=None):
     with col3:
         away_class = "team-logo recommended-team" if away_team == recommended_team else "team-logo"
         highlight_style = """
-            background: radial-gradient(circle at center, rgba(255,215,0,0.1) 0%, transparent 70%);
+            background: radial-gradient(circle at center, rgba(255,215,0,0.1) 0%, rgba(255,255,255,0) 70%);
             padding: 20px;
-            border-radius: 50%;
+            border-radius: 15px;
             display: flex;
             justify-content: center;
             align-items: center;
             min-height: 200px;
-            background-color: rgba(255, 255, 255, 0.05);
+            background-color: rgba(255, 255, 255, 0.03);
         """ if away_team == recommended_team else """
             display: flex;
             justify-content: center;
             align-items: center;
             min-height: 200px;
-            background-color: rgba(255, 255, 255, 0.05);
+            background-color: rgba(255, 255, 255, 0.03);
             border-radius: 15px;
         """
 
