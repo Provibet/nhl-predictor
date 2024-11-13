@@ -378,9 +378,93 @@ st.markdown("""
         visibility: visible;
         opacity: 1;
     }
+    
+    /* Add this to your existing CSS */
+    @keyframes shine {
+        0% {
+            background-position: -100% 50%;
+        }
+        100% {
+            background-position: 200% 50%;
+        }
+    }
+    
+    @keyframes glow {
+        0% {
+            filter: drop-shadow(0 0 5px rgba(255, 215, 0, 0.7));
+        }
+        50% {
+            filter: drop-shadow(0 0 20px rgba(255, 215, 0, 0.9));
+        }
+        100% {
+            filter: drop-shadow(0 0 5px rgba(255, 215, 0, 0.7));
+        }
+    }
+    
+    .team-logo {
+        transform: perspective(1000px) rotateY(10deg);
+        transition: transform 0.3s ease;
+        position: relative;
+        overflow: hidden;
+    }
+    
+    .team-logo::after {
+        content: '';
+        position: absolute;
+        top: -50%;
+        left: -50%;
+        width: 200%;
+        height: 200%;
+        background: linear-gradient(
+            45deg,
+            transparent 0%,
+            transparent 35%,
+            rgba(255, 255, 255, 0.4) 45%,
+            rgba(255, 255, 255, 0.7) 50%,
+            rgba(255, 255, 255, 0.4) 55%,
+            transparent 65%,
+            transparent 100%
+        );
+        animation: shine 3s infinite;
+        pointer-events: none;
+    }
+    
+    .team-logo:hover {
+        transform: perspective(1000px) rotateY(0deg);
+    }
+    
+    .recommended-team {
+        transform: scale(1.2) perspective(1000px) rotateY(10deg);
+        animation: glow 2s infinite;
+        z-index: 1;
+    }
+    
+    .recommended-team:hover {
+        transform: scale(1.2) perspective(1000px) rotateY(0deg);
+    }
+    
+    /* Add more depth to the VS text */
+    .vs-text {
+        font-weight: bold;
+        color: #333;
+        text-shadow: 2px 2px 4px rgba(0,0,0,0.3);
+        font-size: 2em;
+        background: linear-gradient(45deg, #1a1a1a, #4a4a4a);
+        -webkit-background-clip: text;
+        -webkit-text-fill-color: transparent;
+        filter: drop-shadow(2px 2px 2px rgba(0,0,0,0.3));
+    }
+    
+    .progress-bar {
+    height: 20px;
+    background-color: #f0f0f0;
+    border-radius: 10px;
+    overflow: hidden;
+    margin: 10px 0;
+    transition: width 1s ease-out;  /* Smooth width transition */
+    }
     </style>
     """, unsafe_allow_html=True)
-
 
 # Animation helper functions
 def animated_loading():
@@ -402,6 +486,10 @@ def add_animated_probability_bars(home_prob, away_prob, draw_prob):
         <style>
         .probability-container { margin: 20px 0; }
         .probability-label { margin-bottom: 5px; font-weight: bold; }
+        .progress-bar-container {
+            width: 100%;
+            margin: 10px 0;
+        }
         </style>
         """, unsafe_allow_html=True)
 
@@ -410,16 +498,18 @@ def add_animated_probability_bars(home_prob, away_prob, draw_prob):
         ("Away Win", away_prob, "#ff9999"),
         ("Draw", draw_prob, "#99ff99")
     ]:
+        # Calculate the width based on the probability
+        width = prob * 100
+
         st.markdown(f"""
             <div class="probability-container">
                 <div class="probability-label">{label}: {prob:.1%}</div>
-                <div class="progress-bar">
+                <div class="progress-bar" style="width: {width}%;">  <!-- Adjust width here -->
                     <div class="progress-bar-fill" 
-                         style="--width: {prob * 100}%; background-color: {color};"></div>
+                         style="--width: 100%; background-color: {color};"></div>
                 </div>
             </div>
             """, unsafe_allow_html=True)
-
 
 def add_animated_stats_box(title, stats_dict):
     stats_html = "".join(f"<li><b>{k}:</b> {v}</li>" for k, v in stats_dict.items())
@@ -434,27 +524,39 @@ def add_animated_stats_box(title, stats_dict):
 
 
 # Add the new display_team_matchup function here
-def display_team_matchup(home_team, away_team):
+def display_team_matchup(home_team, away_team, recommended_team=None):
     col1, col2, col3 = st.columns([1, 0.2, 1])
 
     with col1:
+        home_class = "team-logo recommended-team" if home_team == recommended_team else "team-logo"
+        highlight_style = """
+            background: radial-gradient(circle at center, rgba(255,215,0,0.1) 0%, transparent 70%);
+            padding: 20px;
+            border-radius: 50%;
+        """ if home_team == recommended_team else ""
+
         st.markdown(f"""
-            <div style="display: flex; justify-content: flex-end; align-items: center;">
-                <img src="{team_logos.get(home_team, '')}" style="max-width: 150px; height: auto;">
+            <div style="display: flex; justify-content: flex-end; align-items: center; {highlight_style}">
+                <img src="{team_logos.get(home_team, '')}" 
+                     class="{home_class}"
+                     style="max-width: 150px; height: auto;">
             </div>
             """, unsafe_allow_html=True)
 
     with col2:
         st.markdown("""
             <div style="display: flex; justify-content: center; align-items: center; height: 100%;">
-                <h2 style="margin: 0;">VS</h2>
+                <h2 class="vs-text" style="margin: 0;">VS</h2>
             </div>
             """, unsafe_allow_html=True)
 
     with col3:
+        away_class = "team-logo recommended-team" if away_team == recommended_team else "team-logo"
         st.markdown(f"""
             <div style="display: flex; justify-content: flex-start; align-items: center;">
-                <img src="{team_logos.get(away_team, '')}" style="max-width: 150px; height: auto;">
+                <img src="{team_logos.get(away_team, '')}" 
+                     class="{away_class}"
+                     style="max-width: 150px; height: auto;">
             </div>
             """, unsafe_allow_html=True)
 
@@ -915,8 +1017,15 @@ def main():
                 with tab1:
                     st.markdown('<h3 class="fade-in">Prediction Results</h3>', unsafe_allow_html=True)
 
-                    # Add team logos
-                    display_team_matchup(home_team, away_team)
+                    # Determine recommended team
+                    recommended_team = None
+                    if home_prob > away_prob and home_prob > draw_prob:
+                        recommended_team = home_team
+                    elif away_prob > home_prob and away_prob > draw_prob:
+                        recommended_team = away_team
+
+                    # Display team matchup with recommended team highlighting
+                    display_team_matchup(home_team, away_team, recommended_team)
 
                     # Add a separator
                     st.markdown("<hr>", unsafe_allow_html=True)
