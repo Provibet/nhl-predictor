@@ -525,6 +525,17 @@ def add_animated_stats_box(title, stats_dict):
 
 # Add the new display_team_matchup function here
 def display_team_matchup(home_team, away_team, recommended_team=None):
+    # First add a container with lighter background
+    st.markdown("""
+        <div style="
+            background: linear-gradient(to bottom, #1a1f2c, #161922);
+            border-radius: 15px;
+            padding: 20px;
+            margin: 20px 0;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+        ">
+    """, unsafe_allow_html=True)
+
     col1, col2, col3 = st.columns([1, 0.2, 1])
 
     with col1:
@@ -533,10 +544,22 @@ def display_team_matchup(home_team, away_team, recommended_team=None):
             background: radial-gradient(circle at center, rgba(255,215,0,0.1) 0%, transparent 70%);
             padding: 20px;
             border-radius: 50%;
-        """ if home_team == recommended_team else ""
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 200px;
+            background-color: rgba(255, 255, 255, 0.05);
+        """ if home_team == recommended_team else """
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 200px;
+            background-color: rgba(255, 255, 255, 0.05);
+            border-radius: 15px;
+        """
 
         st.markdown(f"""
-            <div style="display: flex; justify-content: flex-end; align-items: center; {highlight_style}">
+            <div style="{highlight_style}">
                 <img src="{team_logos.get(home_team, '')}" 
                      class="{home_class}"
                      style="max-width: 150px; height: auto;">
@@ -545,21 +568,41 @@ def display_team_matchup(home_team, away_team, recommended_team=None):
 
     with col2:
         st.markdown("""
-            <div style="display: flex; justify-content: center; align-items: center; height: 100%;">
-                <h2 class="vs-text" style="margin: 0;">VS</h2>
+            <div style="display: flex; justify-content: center; align-items: center; min-height: 200px;">
+                <h2 class="vs-text" style="margin: 0; padding: 0;">VS</h2>
             </div>
             """, unsafe_allow_html=True)
 
     with col3:
         away_class = "team-logo recommended-team" if away_team == recommended_team else "team-logo"
+        highlight_style = """
+            background: radial-gradient(circle at center, rgba(255,215,0,0.1) 0%, transparent 70%);
+            padding: 20px;
+            border-radius: 50%;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 200px;
+            background-color: rgba(255, 255, 255, 0.05);
+        """ if away_team == recommended_team else """
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 200px;
+            background-color: rgba(255, 255, 255, 0.05);
+            border-radius: 15px;
+        """
+
         st.markdown(f"""
-            <div style="display: flex; justify-content: flex-start; align-items: center;">
+            <div style="{highlight_style}">
                 <img src="{team_logos.get(away_team, '')}" 
                      class="{away_class}"
                      style="max-width: 150px; height: auto;">
             </div>
             """, unsafe_allow_html=True)
 
+    # Close the container div
+    st.markdown("</div>", unsafe_allow_html=True)
 
 def add_confidence_indicators(st, home_prob, away_prob, draw_prob):
     """Add clear visual confidence indicators with animation"""
