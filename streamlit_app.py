@@ -402,16 +402,19 @@ def prepare_features(home_team, away_team, home_odds, away_odds, draw_odds):
             'home_fenwickPercentage': safe_get(home_stats, 'recent_fenwick_pct', 50.0),
             'away_fenwickPercentage': safe_get(away_stats, 'recent_fenwick_pct', 50.0),
 
-            # Recent Form Features
+            # Recent Form Features (Standardized naming for consistency)
             'home_recent_wins': safe_get(home_stats, 'recent_wins', 0.5),
-            'home_recent_goals_for': safe_get(home_stats, 'recent_goals_for', 2.5),
-            'home_recent_goals_against': safe_get(home_stats, 'recent_goals_against', 2.5),
+            'home_recent_goals_avg': safe_get(home_stats, 'recent_goals_for', 2.5),
+            'home_recent_goals_allowed': safe_get(home_stats, 'recent_goals_against', 2.5),
             'away_recent_wins': safe_get(away_stats, 'recent_wins', 0.5),
-            'away_recent_goals_for': safe_get(away_stats, 'recent_goals_for', 2.5),
-            'away_recent_goals_against': safe_get(away_stats, 'recent_goals_against', 2.5),
+            'away_recent_goals_avg': safe_get(away_stats, 'recent_goals_for', 2.5),
+            'away_recent_goals_allowed': safe_get(away_stats, 'recent_goals_against', 2.5),
 
             # Head-to-Head Features
-            'h2h_home_wins': safe_get(h2h_stats, 'home_team_wins', 0) / max(h2h_stats['games_played'], 1),
+            'h2h_home_win_pct': safe_get(h2h_stats, 'home_team_wins', 0) / max(h2h_stats['games_played'], 1),
+            'h2h_games_played': safe_get(h2h_stats, 'games_played', 5),
+            'h2h_avg_total_goals': safe_get(h2h_stats, 'avg_total_goals', 5.0),
+            'h2h_home_wins': safe_get(h2h_stats, 'home_team_wins', 0),
             'h2h_home_goals': safe_get(h2h_stats, 'home_team_avg_goals', 2.5),
             'h2h_away_goals': safe_get(h2h_stats, 'away_team_avg_goals', 2.5),
 
@@ -431,6 +434,18 @@ def prepare_features(home_team, away_team, home_odds, away_odds, draw_odds):
             'home_historical_advantage': safe_get(h2h_stats, 'home_team_wins', 0) / max(h2h_stats['games_played'], 1),
             'home_recent_form': safe_get(home_stats, 'recent_goals_for', 2.5),
             'away_recent_form': safe_get(away_stats, 'recent_goals_for', 2.5),
+
+            # Goalie Features
+            'home_goalie_save_pct': safe_get(home_stats, 'goalie_save_pct', 0.9),
+            'home_goalie_games': safe_get(home_stats, 'goalie_games', 1),
+            'away_goalie_save_pct': safe_get(away_stats, 'goalie_save_pct', 0.9),
+            'away_goalie_games': safe_get(away_stats, 'goalie_games', 1),
+
+            # Team Scoring Metrics
+            'home_team_goals_per_game': safe_get(home_stats, 'goals_per_game', 2.5),
+            'home_team_top_scorer_goals': safe_get(home_stats, 'top_scorer_goals', 2.5),
+            'away_team_goals_per_game': safe_get(away_stats, 'goals_per_game', 2.5),
+            'away_team_top_scorer_goals': safe_get(away_stats, 'top_scorer_goals', 2.5),
 
             # Market Features
             'home_implied_prob_normalized': home_implied_prob / market_efficiency,
