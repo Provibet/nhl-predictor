@@ -1027,12 +1027,10 @@ def main():
                 )
 
                 # Get model prediction
-                win_probability = model.predict_proba(features)[0]
-
-                # Calculate probabilities
-                home_prob = win_probability[1]
-                away_prob = win_probability[0] * 0.8  # Adjust for draw
-                draw_prob = win_probability[0] * 0.2  # Allocate portion to draw
+                probabilities = model.predict_proba(features)[0]
+                away_prob = probabilities[0]
+                draw_prob = probabilities[1]
+                home_prob = probabilities[2]
 
                 # Normalize probabilities
                 total_prob = home_prob + away_prob + draw_prob
