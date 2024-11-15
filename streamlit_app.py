@@ -164,6 +164,7 @@ def safe_get(stats, key, default=0.0):
     except (TypeError, ValueError):
         return default
 
+
 def prepare_features(home_team, away_team, home_odds, away_odds, draw_odds):
     """Prepare features for prediction"""
     try:
@@ -178,40 +179,67 @@ def prepare_features(home_team, away_team, home_odds, away_odds, draw_odds):
         draw_implied_prob = 1 / float(draw_odds) if float(draw_odds) != 0 else 0.33
         market_efficiency = home_implied_prob + away_implied_prob + draw_implied_prob
 
-        # Create features dictionary with only the exact columns used in training
+        # Create features dictionary with all required features
         features = {
-            # Recent form metrics
+            # Original features (used by other parts of the app)
             'home_recent_wins': safe_get(home_stats, 'recent_wins', 0.5),
             'home_recent_goals_avg': safe_get(home_stats, 'recent_goals_for', 2.5),
             'home_recent_goals_allowed': safe_get(home_stats, 'recent_goals_against', 2.5),
             'away_recent_wins': safe_get(away_stats, 'recent_wins', 0.5),
             'away_recent_goals_avg': safe_get(away_stats, 'recent_goals_for', 2.5),
             'away_recent_goals_allowed': safe_get(away_stats, 'recent_goals_against', 2.5),
-
-            # Head to head metrics
             'h2h_home_win_pct': safe_get(h2h_stats, 'home_team_wins', 0) / max(h2h_stats['games_played'], 1),
             'h2h_games_played': safe_get(h2h_stats, 'games_played', 0),
             'h2h_avg_total_goals': safe_get(h2h_stats, 'avg_total_goals', 5.0),
-
-            # Goalie metrics
-            'home_goalie_save_pct': safe_get(home_stats, 'goalie_save_pct', 0.9),
+            'home_goalie_save_pct': safe_get(home_stats, 'save_percentage', 0.9),
             'home_goalie_games': safe_get(home_stats, 'goalie_games', 1),
-            'away_goalie_save_pct': safe_get(away_stats, 'goalie_save_pct', 0.9),
+            'away_goalie_save_pct': safe_get(away_stats, 'save_percentage', 0.9),
             'away_goalie_games': safe_get(away_stats, 'goalie_games', 1),
-
-            # Team scoring metrics
             'home_team_goals_per_game': safe_get(home_stats, 'goals_per_game', 2.5),
             'home_team_top_scorer_goals': safe_get(home_stats, 'top_scorer_goals', 2.5),
             'away_team_goals_per_game': safe_get(away_stats, 'goals_per_game', 2.5),
             'away_team_top_scorer_goals': safe_get(away_stats, 'top_scorer_goals', 2.5),
-
-            # Market-based features
             'home_implied_prob_normalized': home_implied_prob / market_efficiency,
             'away_implied_prob_normalized': away_implied_prob / market_efficiency,
-            'draw_implied_prob_normalized': draw_implied_prob / market_efficiency
+            'draw_implied_prob_normalized': draw_implied_prob / market_efficiency,
+
+            # Balanced ratio features (used by the model)
+            'relative_recent_wins_ratio': safe_get(home_stats, 'recent_wins', 0.5) /
+                                          max(safe_get(away_stats, 'recent_wins', 0.5), 0.0001),
+            'relative_recent_goals_avg_ratio': safe_get(home_stats, 'recent_goals_for', 2.5) /
+                                               max(safe_get(away_stats, 'recent_goals_for', 2.5), 0.0001),
+            'relative_recent_goals_allowed_ratio': safe_get(home_stats, 'recent_goals_against', 2.5) /
+                                                   max(safe_get(away_stats, 'recent_goals_against', 2.5), 0.0001),
+            'relative_goalie_save_pct_ratio': safe_get(home_stats, 'save_percentage', 0.9) /
+                                              max(safe_get(away_stats, 'save_percentage', 0.9), 0.0001),
+            'relative_goalie_games_ratio': safe_get(home_stats, 'goalie_games', 1) /
+                                           max(safe_get(away_stats, 'goalie_games', 1), 0.0001),
+            'relative_team_goals_per_game_ratio': safe_get(home_stats, 'goals_per_game', 2.5) /
+                                                  max(safe_get(away_stats, 'goals_per_game', 2.5), 0.0001),
+            'relative_team_top_scorer_goals_ratio': safe_get(home_stats, 'top_scorer_goals', 2.5) /
+                                                    max(safe_get(away_stats, 'top_scorer_goals', 2.5), 0.0001),
+            'relative_implied_prob_normalized_ratio': (home_implied_prob / market_efficiency) /
+                                                      max((away_implied_prob / market_efficiency), 0.0001)
         }
 
-        return pd.DataFrame([features]), home_stats, away_stats, h2h_stats
+        # Create DataFrame with all features
+        df = pd.DataFrame([features])
+
+        # Select only the features needed for the model prediction
+        model_features = df[[
+            'h2h_home_win_pct', 'h2h_games_played', 'h2h_avg_total_goals',
+            'draw_implied_prob_normalized',
+            'relative_recent_wins_ratio',
+            'relative_recent_goals_avg_ratio',
+            'relative_recent_goals_allowed_ratio',
+            'relative_goalie_save_pct_ratio',
+            'relative_goalie_games_ratio',
+            'relative_team_goals_per_game_ratio',
+            'relative_team_top_scorer_goals_ratio',
+            'relative_implied_prob_normalized_ratio'
+        ]]
+
+        return model_features, home_stats, away_stats, h2h_stats
 
     except Exception as e:
         st.error(f"Failed to prepare features: {str(e)}")
