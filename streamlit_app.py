@@ -172,7 +172,27 @@ def get_team_stats(team):
     GROUP BY gs.best_save_percentage, gs.most_games_played, ss.top_scorer_goals
     """
     engine = init_connection()
-    return pd.read_sql(query, engine, params={'team': team}).iloc[0]
+    result = pd.read_sql(query, engine, params={'team': team})
+
+    # Debug output
+    with st.expander(f"Database Debug for {team}"):
+        st.write("SQL Query Result:")
+        st.dataframe(result)
+
+        if result.empty:
+            st.error(f"⚠️ No data found for {team}")
+        else:
+            st.write("Sample of statistics found:")
+            stats_dict = {
+                'Goals For': result['goalsFor'].iloc[0],
+                'Goals Against': result['goalsAgainst'].iloc[0],
+                'xG%': result['xGoalsPercentage'].iloc[0],
+                'Corsi%': result['corsiPercentage'].iloc[0],
+                'Fenwick%': result['fenwickPercentage'].iloc[0]
+            }
+            st.json(stats_dict)
+
+    return result.iloc[0]
 
 def get_head_to_head_stats(home_team, away_team):
     """Get head-to-head statistics with proper column references"""
@@ -261,6 +281,22 @@ def safe_get(stats, key, default=0.0):
 
 def prepare_features(home_team, away_team, home_odds, away_odds, draw_odds):
     try:
+        # Add debug here, right at the start of try block
+        with st.expander("Feature Generation Debug"):
+            # Get all required stats
+            st.write("📊 Fetching Stats...")
+            home_stats = get_team_stats(home_team)
+            away_stats = get_team_stats(away_team)
+
+            # Display raw stats
+            col1, col2 = st.columns(2)
+            with col1:
+                st.write(f"{home_team} Raw Stats:")
+                st.json(dict(home_stats))
+            with col2:
+                st.write(f"{away_team} Raw Stats:")
+                st.json(dict(away_stats))
+
         # Get all required stats
         home_stats = get_team_stats(home_team)
         away_stats = get_team_stats(away_team)
@@ -316,6 +352,17 @@ def prepare_features(home_team, away_team, home_odds, away_odds, draw_odds):
             'relative_fenwickPercentage_ratio': safe_get(home_stats, 'fenwickPercentage', 50.0) /
                                                 max(safe_get(away_stats, 'fenwickPercentage', 50.0), 0.001)
         }])
+
+        # Add debug for final features
+        with st.expander("Final Features Debug"):
+            st.write("🔄 Generated Features:")
+            st.dataframe(features)
+
+            # Check for zeros
+            features_dict = features.iloc[0].to_dict()
+            zero_features = [k for k, v in features_dict.items() if v == 0]
+            if zero_features:
+                st.warning(f"⚠️ Features with zero values: {', '.join(zero_features)}")
 
         return features, home_stats, away_stats, h2h_stats
 
@@ -1319,6 +1366,21 @@ def main():
 
                 # Get model prediction
                 win_probability = model.predict_proba(features)[0]
+
+                # Add debug right here
+                with st.expander("Model Prediction Debug"):
+                    st.write("Input Features:")
+                    st.dataframe(features)
+
+                    st.write("Raw Model Output:")
+                    st.write(win_probability)
+
+                    st.write("Processed Probabilities:")
+                    st.write({
+                        "Home Win": f"{home_prob:.1%}",
+                        "Away Win": f"{away_prob:.1%}",
+                        "Draw": f"{draw_prob:.1%}"
+                    })
 
                 # Calculate probabilities
                 home_prob = win_probability[1]
