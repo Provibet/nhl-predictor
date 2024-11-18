@@ -79,11 +79,7 @@ def get_team_stats(team):
             COALESCE("goalsAgainst", 0) as "goalsAgainst",
             COALESCE("xGoalsPercentage", 50) as "xGoalsPercentage",
             COALESCE("corsiPercentage", 50) as "corsiPercentage",
-            COALESCE("fenwickPercentage", 50) as "fenwickPercentage",
-            COALESCE("highDangerGoalsFor", 0) as "highDangerGoalsFor",
-            COALESCE("highDangerGoalsAgainst", 0) as "highDangerGoalsAgainst",
-            COALESCE("mediumDangerGoalsFor", 0) as "mediumDangerGoalsFor",
-            COALESCE("mediumDangerGoalsAgainst", 0) as "mediumDangerGoalsAgainst"
+            COALESCE("fenwickPercentage", 50) as "fenwickPercentage"
         FROM nhl24_matchups_with_situations
         WHERE team = %(team)s
         ORDER BY games_played DESC
@@ -124,20 +120,30 @@ def get_team_stats(team):
     """
     engine = init_connection()
     result = pd.read_sql(query, engine, params={'team': team})
+
+    # Return default values if no data found
+    default_values = {
+        'goalsFor': 2.5,
+        'goalsAgainst': 2.5,
+        'xGoalsPercentage': 50.0,
+        'corsiPercentage': 50.0,
+        'fenwickPercentage': 50.0,
+        'goalie_save_percentage': 0.9,
+        'goalie_games': 1,
+        'top_scorer_goals': 0,
+        'recent_win_rate': 0.5
+    }
+
     if result.empty:
-        # Return default values if no data found
-        return pd.Series({
-            'goalsFor': 2.5,
-            'goalsAgainst': 2.5,
-            'xGoalsPercentage': 50.0,
-            'corsiPercentage': 50.0,
-            'fenwickPercentage': 50.0,
-            'goalie_save_percentage': 0.9,
-            'goalie_games': 1,
-            'top_scorer_goals': 0,
-            'recent_win_rate': 0.5
-        })
+        return pd.Series(default_values)
+
+    # Replace any None or NaN values with defaults
+    for col in result.columns:
+        if col in default_values:
+            result[col] = result[col].fillna(default_values[col])
+
     return result.iloc[0]
+
 
 def get_head_to_head_stats(home_team, away_team):
     """Get head-to-head statistics"""
@@ -186,6 +192,7 @@ def safe_get(stats, key, default=0.0):
     except (TypeError, ValueError):
         return float(default)
 
+
 def prepare_basic_features(home_team, away_team, home_odds, away_odds, draw_odds):
     """Prepare features that match the model's expectations exactly"""
     try:
@@ -194,58 +201,71 @@ def prepare_basic_features(home_team, away_team, home_odds, away_odds, draw_odds
         away_stats = get_team_stats(away_team)
         h2h_stats = get_head_to_head_stats(home_team, away_team)
 
-        # Calculate ratios and relative metrics
+        # Debug info before feature calculation
+        with st.expander("Raw Data Check"):
+            st.write("Home Stats:", dict(home_stats))
+            st.write("Away Stats:", dict(away_stats))
+            st.write("H2H Stats:", dict(h2h_stats))
+
+        # Ensure small non-zero value for division
+        EPSILON = 0.0001
+
+        # Calculate features with safety checks
         features = {
-            # H2H features
-            'h2h_home_win_pct': h2h_stats['home_team_wins'] / max(h2h_stats['games_played'], 1),
-            'h2h_games_played': h2h_stats['games_played'],
-            'h2h_avg_total_goals': h2h_stats['avg_total_goals'],
+            'h2h_home_win_pct': float(h2h_stats['home_team_wins']) / max(float(h2h_stats['games_played']), 1),
+            'h2h_games_played': float(h2h_stats['games_played']),
+            'h2h_avg_total_goals': float(h2h_stats['avg_total_goals']),
 
-            # Implied probabilities
-            'draw_implied_prob_normalized': (1 / draw_odds) / ((1 / home_odds) + (1 / away_odds) + (1 / draw_odds)),
+            'draw_implied_prob_normalized': ((1 / float(draw_odds)) /
+                                             ((1 / float(home_odds)) + (1 / float(away_odds)) + (
+                                                         1 / float(draw_odds)))),
 
-            # Recent form ratios
-            'relative_recent_wins_ratio': safe_get(home_stats, 'recent_win_rate', 0.5) /
-                                          max(safe_get(away_stats, 'recent_win_rate', 0.5), 0.001),
-            'relative_recent_goals_avg_ratio': safe_get(home_stats, 'goalsFor', 2.5) /
-                                               max(safe_get(away_stats, 'goalsFor', 2.5), 0.001),
-            'relative_recent_goals_allowed_ratio': safe_get(home_stats, 'goalsAgainst', 2.5) /
-                                                   max(safe_get(away_stats, 'goalsAgainst', 2.5), 0.001),
+            'relative_recent_wins_ratio': (float(home_stats['recent_win_rate']) /
+                                           max(float(away_stats['recent_win_rate']), EPSILON)),
 
-            # Goalie stats ratios
-            'relative_goalie_save_pct_ratio': safe_get(home_stats, 'goalie_save_percentage', 0.9) /
-                                              max(safe_get(away_stats, 'goalie_save_percentage', 0.9), 0.001),
-            'relative_goalie_games_ratio': safe_get(home_stats, 'goalie_games', 1) /
-                                           max(safe_get(away_stats, 'goalie_games', 1), 0.001),
+            'relative_recent_goals_avg_ratio': (float(home_stats['goalsFor']) /
+                                                max(float(away_stats['goalsFor']), EPSILON)),
 
-            # Team scoring ratios
-            'relative_team_goals_per_game_ratio': safe_get(home_stats, 'goalsFor', 2.5) /
-                                                  max(safe_get(away_stats, 'goalsFor', 2.5), 0.001),
-            'relative_team_top_scorer_goals_ratio': safe_get(home_stats, 'top_scorer_goals', 0) /
-                                                    max(safe_get(away_stats, 'top_scorer_goals', 0), 0.001),
+            'relative_recent_goals_allowed_ratio': (float(home_stats['goalsAgainst']) /
+                                                    max(float(away_stats['goalsAgainst']), EPSILON)),
 
-            # Market probabilities ratio
-            'relative_implied_prob_normalized_ratio': ((1 / home_odds) / (
-                        (1 / home_odds) + (1 / away_odds) + (1 / draw_odds))) /
-                                                      max((1 / away_odds) / (
-                                                                  (1 / home_odds) + (1 / away_odds) + (1 / draw_odds)),
-                                                          0.001),
+            'relative_goalie_save_pct_ratio': (float(home_stats['goalie_save_percentage']) /
+                                               max(float(away_stats['goalie_save_percentage']), EPSILON)),
 
-            # Advanced stats ratios
-            'relative_xGoalsPercentage_ratio': safe_get(home_stats, 'xGoalsPercentage', 50.0) /
-                                               max(safe_get(away_stats, 'xGoalsPercentage', 50.0), 0.001),
-            'relative_corsiPercentage_ratio': safe_get(home_stats, 'corsiPercentage', 50.0) /
-                                              max(safe_get(away_stats, 'corsiPercentage', 50.0), 0.001),
-            'relative_fenwickPercentage_ratio': safe_get(home_stats, 'fenwickPercentage', 50.0) /
-                                                max(safe_get(away_stats, 'fenwickPercentage', 50.0), 0.001)
+            'relative_goalie_games_ratio': (float(home_stats['goalie_games']) /
+                                            max(float(away_stats['goalie_games']), EPSILON)),
+
+            'relative_team_goals_per_game_ratio': (float(home_stats['goalsFor']) /
+                                                   max(float(away_stats['goalsFor']), EPSILON)),
+
+            'relative_team_top_scorer_goals_ratio': ((float(home_stats['top_scorer_goals']) + EPSILON) /
+                                                     max(float(away_stats['top_scorer_goals']) + EPSILON, EPSILON)),
+
+            'relative_implied_prob_normalized_ratio': (((1 / float(home_odds)) /
+                                                        ((1 / float(home_odds)) + (1 / float(away_odds)) + (
+                                                                    1 / float(draw_odds)))) /
+                                                       max((1 / float(away_odds)) /
+                                                           ((1 / float(home_odds)) + (1 / float(away_odds)) + (
+                                                                       1 / float(draw_odds))),
+                                                           EPSILON)),
+
+            'relative_xGoalsPercentage_ratio': (float(home_stats['xGoalsPercentage']) /
+                                                max(float(away_stats['xGoalsPercentage']), EPSILON)),
+
+            'relative_corsiPercentage_ratio': (float(home_stats['corsiPercentage']) /
+                                               max(float(away_stats['corsiPercentage']), EPSILON)),
+
+            'relative_fenwickPercentage_ratio': (float(home_stats['fenwickPercentage']) /
+                                                 max(float(away_stats['fenwickPercentage']), EPSILON))
         }
 
-        # Debug info
+        # Debug the calculated features
         with st.expander("Debug Feature Information"):
-            st.write("Raw Home Team Stats:", dict(home_stats))
-            st.write("Raw Away Team Stats:", dict(away_stats))
-            st.write("H2H Stats:", dict(h2h_stats))
             st.write("Calculated Features:", features)
+            # Check for any None or infinite values
+            for key, value in features.items():
+                if value is None or np.isinf(value) or np.isnan(value):
+                    st.error(f"Invalid value in {key}: {value}")
 
         return pd.DataFrame([features])
 
@@ -255,7 +275,6 @@ def prepare_basic_features(home_team, away_team, home_odds, away_odds, draw_odds
         st.write(f"Home team: {home_team}")
         st.write(f"Away team: {away_team}")
         return None
-
 
 def display_prediction_results(probs, home_team, away_team, home_odds, away_odds, draw_odds):
     """Display prediction results with formatting"""
