@@ -181,99 +181,130 @@ def get_head_to_head_stats(home_team, away_team):
 
 
 def safe_get(stats, key, default=0.0):
-    """Safely get a value from stats with a default"""
+    """Safely get a value from stats with robust type checking and conversion"""
     try:
-        val = stats.get(key, default)
+        # Get the value, use default if not found or None
+        val = stats.get(key)
         if val is None or pd.isna(val):
             return float(default)
-        # Convert to float and handle division by zero
-        val = float(val)
-        return val if val != 0 else float(default)
-    except (TypeError, ValueError):
+
+        # Try to convert to float, use default if fails
+        try:
+            val = float(val)
+            # Check for infinite or NaN values
+            if np.isinf(val) or np.isnan(val):
+                return float(default)
+            return val
+        except (ValueError, TypeError):
+            return float(default)
+
+    except Exception:
         return float(default)
 
 
 def prepare_basic_features(home_team, away_team, home_odds, away_odds, draw_odds):
-    """Prepare features that match the model's expectations exactly"""
+    """Prepare features with robust error handling"""
     try:
-        # Get team stats
+        # Get team stats with debug output
+        st.write("Fetching team stats...")
         home_stats = get_team_stats(home_team)
         away_stats = get_team_stats(away_team)
         h2h_stats = get_head_to_head_stats(home_team, away_team)
 
-        # Debug info before feature calculation
-        with st.expander("Raw Data Check"):
+        # Debug raw data
+        with st.expander("Raw Data"):
             st.write("Home Stats:", dict(home_stats))
             st.write("Away Stats:", dict(away_stats))
             st.write("H2H Stats:", dict(h2h_stats))
 
-        # Ensure small non-zero value for division
+        # Constants for safety
         EPSILON = 0.0001
+        DEFAULT_PERCENTAGE = 50.0
 
-        # Calculate features with safety checks
+        # Safely prepare features with explicit defaults
         features = {
-            'h2h_home_win_pct': float(h2h_stats['home_team_wins']) / max(float(h2h_stats['games_played']), 1),
-            'h2h_games_played': float(h2h_stats['games_played']),
-            'h2h_avg_total_goals': float(h2h_stats['avg_total_goals']),
+            # H2H features
+            'h2h_home_win_pct': safe_get(h2h_stats, 'home_team_wins', 0) /
+                                max(safe_get(h2h_stats, 'games_played', 1), 1),
+            'h2h_games_played': safe_get(h2h_stats, 'games_played', 0),
+            'h2h_avg_total_goals': safe_get(h2h_stats, 'avg_total_goals', 5.0),
 
+            # Implied probabilities
             'draw_implied_prob_normalized': ((1 / float(draw_odds)) /
-                                             ((1 / float(home_odds)) + (1 / float(away_odds)) + (
-                                                         1 / float(draw_odds)))),
+                                             ((1 / float(home_odds)) +
+                                              (1 / float(away_odds)) +
+                                              (1 / float(draw_odds)))),
 
-            'relative_recent_wins_ratio': (float(home_stats['recent_win_rate']) /
-                                           max(float(away_stats['recent_win_rate']), EPSILON)),
+            # Recent form ratios
+            'relative_recent_wins_ratio': safe_get(home_stats, 'recent_win_rate', 0.5) /
+                                          max(safe_get(away_stats, 'recent_win_rate', 0.5), EPSILON),
 
-            'relative_recent_goals_avg_ratio': (float(home_stats['goalsFor']) /
-                                                max(float(away_stats['goalsFor']), EPSILON)),
+            'relative_recent_goals_avg_ratio': safe_get(home_stats, 'goalsFor', 2.5) /
+                                               max(safe_get(away_stats, 'goalsFor', 2.5), EPSILON),
 
-            'relative_recent_goals_allowed_ratio': (float(home_stats['goalsAgainst']) /
-                                                    max(float(away_stats['goalsAgainst']), EPSILON)),
+            'relative_recent_goals_allowed_ratio': safe_get(home_stats, 'goalsAgainst', 2.5) /
+                                                   max(safe_get(away_stats, 'goalsAgainst', 2.5), EPSILON),
 
-            'relative_goalie_save_pct_ratio': (float(home_stats['goalie_save_percentage']) /
-                                               max(float(away_stats['goalie_save_percentage']), EPSILON)),
+            # Goalie stats ratios
+            'relative_goalie_save_pct_ratio': safe_get(home_stats, 'goalie_save_percentage', 0.9) /
+                                              max(safe_get(away_stats, 'goalie_save_percentage', 0.9), EPSILON),
 
-            'relative_goalie_games_ratio': (float(home_stats['goalie_games']) /
-                                            max(float(away_stats['goalie_games']), EPSILON)),
+            'relative_goalie_games_ratio': safe_get(home_stats, 'goalie_games', 1) /
+                                           max(safe_get(away_stats, 'goalie_games', 1), EPSILON),
 
-            'relative_team_goals_per_game_ratio': (float(home_stats['goalsFor']) /
-                                                   max(float(away_stats['goalsFor']), EPSILON)),
+            # Team scoring ratios
+            'relative_team_goals_per_game_ratio': safe_get(home_stats, 'goalsFor', 2.5) /
+                                                  max(safe_get(away_stats, 'goalsFor', 2.5), EPSILON),
 
-            'relative_team_top_scorer_goals_ratio': ((float(home_stats['top_scorer_goals']) + EPSILON) /
-                                                     max(float(away_stats['top_scorer_goals']) + EPSILON, EPSILON)),
+            'relative_team_top_scorer_goals_ratio': (safe_get(home_stats, 'top_scorer_goals', 1) + EPSILON) /
+                                                    max(safe_get(away_stats, 'top_scorer_goals', 1) + EPSILON, EPSILON),
 
-            'relative_implied_prob_normalized_ratio': (((1 / float(home_odds)) /
-                                                        ((1 / float(home_odds)) + (1 / float(away_odds)) + (
-                                                                    1 / float(draw_odds)))) /
-                                                       max((1 / float(away_odds)) /
-                                                           ((1 / float(home_odds)) + (1 / float(away_odds)) + (
-                                                                       1 / float(draw_odds))),
-                                                           EPSILON)),
+            # Market probabilities ratio
+            'relative_implied_prob_normalized_ratio': ((1 / float(home_odds)) /
+                                                       ((1 / float(home_odds)) + (1 / float(away_odds)) + (
+                                                                   1 / float(draw_odds)))) /
+                                                      max((1 / float(away_odds)) /
+                                                          ((1 / float(home_odds)) + (1 / float(away_odds)) + (
+                                                                      1 / float(draw_odds))),
+                                                          EPSILON),
 
-            'relative_xGoalsPercentage_ratio': (float(home_stats['xGoalsPercentage']) /
-                                                max(float(away_stats['xGoalsPercentage']), EPSILON)),
+            # Advanced stats ratios
+            'relative_xGoalsPercentage_ratio': safe_get(home_stats, 'xGoalsPercentage', DEFAULT_PERCENTAGE) /
+                                               max(safe_get(away_stats, 'xGoalsPercentage', DEFAULT_PERCENTAGE),
+                                                   EPSILON),
 
-            'relative_corsiPercentage_ratio': (float(home_stats['corsiPercentage']) /
-                                               max(float(away_stats['corsiPercentage']), EPSILON)),
+            'relative_corsiPercentage_ratio': safe_get(home_stats, 'corsiPercentage', DEFAULT_PERCENTAGE) /
+                                              max(safe_get(away_stats, 'corsiPercentage', DEFAULT_PERCENTAGE), EPSILON),
 
-            'relative_fenwickPercentage_ratio': (float(home_stats['fenwickPercentage']) /
-                                                 max(float(away_stats['fenwickPercentage']), EPSILON))
+            'relative_fenwickPercentage_ratio': safe_get(home_stats, 'fenwickPercentage', DEFAULT_PERCENTAGE) /
+                                                max(safe_get(away_stats, 'fenwickPercentage', DEFAULT_PERCENTAGE),
+                                                    EPSILON)
         }
 
-        # Debug the calculated features
-        with st.expander("Debug Feature Information"):
-            st.write("Calculated Features:", features)
-            # Check for any None or infinite values
-            for key, value in features.items():
-                if value is None or np.isinf(value) or np.isnan(value):
-                    st.error(f"Invalid value in {key}: {value}")
+        # Validate features before returning
+        for key, value in features.items():
+            if value is None or np.isinf(value) or np.isnan(value):
+                st.error(f"Invalid value detected for {key}: {value}")
+                features[key] = 1.0  # Safe default
 
-        return pd.DataFrame([features])
+        # Create DataFrame and validate
+        features_df = pd.DataFrame([features])
+
+        # Debug final features
+        with st.expander("Final Features Check"):
+            st.write("Feature names:", features_df.columns.tolist())
+            st.write("Feature values:", features_df.iloc[0].to_dict())
+            st.write("Any null values:", features_df.isnull().sum().to_dict())
+            st.write("Any infinite values:", np.isinf(features_df).sum().to_dict())
+
+        return features_df
 
     except Exception as e:
-        st.error(f"Error preparing features: {str(e)}")
+        st.error(f"Error in feature preparation: {str(e)}")
         st.write("Debug information:")
         st.write(f"Home team: {home_team}")
         st.write(f"Away team: {away_team}")
+        st.write(f"Odds: {home_odds}/{away_odds}/{draw_odds}")
         return None
 
 def display_prediction_results(probs, home_team, away_team, home_odds, away_odds, draw_odds):
