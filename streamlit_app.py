@@ -123,7 +123,7 @@ def get_team_stats(team):
             "takeawaysFor",
             "giveawaysFor"
         FROM nhl24_matchups_with_situations
-        WHERE team = %s
+        WHERE team = %(team)s
         ORDER BY games_played DESC
         LIMIT 10
     ),
@@ -133,7 +133,7 @@ def get_team_stats(team):
             MAX(save_percentage) as best_save_percentage,
             MAX(games_played) as most_games_played
         FROM nhl24_goalie_stats
-        WHERE team = %s
+        WHERE team = %(team)s
         GROUP BY team
     ),
     skater_stats AS (
@@ -142,7 +142,7 @@ def get_team_stats(team):
             MAX(goals) as top_scorer_goals,
             COUNT(*) as num_players
         FROM nhl24_skater_stats
-        WHERE team = %s AND position != 'G'
+        WHERE team = %(team)s AND position != 'G'
         GROUP BY team
     )
     SELECT 
@@ -172,7 +172,7 @@ def get_team_stats(team):
     GROUP BY gs.best_save_percentage, gs.most_games_played, ss.top_scorer_goals
     """
     engine = init_connection()
-    return pd.read_sql(query, engine, params=[team, team, team]).iloc[0]
+    return pd.read_sql(query, engine, params={'team': team}).iloc[0]
 
 def get_head_to_head_stats(home_team, away_team):
     """Get head-to-head statistics with proper column references"""
@@ -186,41 +186,31 @@ def get_head_to_head_stats(home_team, away_team):
             CAST(home_team_score AS INTEGER) + CAST(away_team_score AS INTEGER) as total_goals,
             status
         FROM nhl24_results
-        WHERE (home_team = %s AND away_team = %s)
-           OR (home_team = %s AND away_team = %s)
+        WHERE (home_team = %(home)s AND away_team = %(away)s)
+           OR (home_team = %(away)s AND away_team = %(home)s)
         ORDER BY game_date DESC
         LIMIT 10
-    ),
-    team_stats AS (
-        SELECT 
-            m.team,
-            AVG(m."xGoalsPercentage") as avg_xgoals_pct,
-            AVG(m."corsiPercentage") as avg_corsi_pct
-        FROM nhl24_matchups_with_situations m
-        WHERE m.team IN (%s, %s)
-        GROUP BY m.team
     )
     SELECT 
         COALESCE(AVG(total_goals), 0) as avg_total_goals,
         COUNT(*) as games_played,
         SUM(CASE 
-            WHEN home_team = %s AND home_score > away_score THEN 1
-            WHEN away_team = %s AND away_score > home_score THEN 1
+            WHEN home_team = %(home)s AND home_score > away_score THEN 1
+            WHEN away_team = %(home)s AND away_score > home_score THEN 1
             ELSE 0 
         END) as home_team_wins,
-        AVG(CASE WHEN home_team = %s THEN home_score ELSE away_score END) as home_team_avg_goals,
-        AVG(CASE WHEN home_team = %s THEN away_score ELSE home_score END) as away_team_avg_goals,
+        AVG(CASE WHEN home_team = %(home)s THEN home_score ELSE away_score END) as home_team_avg_goals,
+        AVG(CASE WHEN home_team = %(home)s THEN away_score ELSE home_score END) as away_team_avg_goals,
         COUNT(CASE WHEN status NOT IN ('Final', 'Regulation') THEN 1 END) as overtime_games
     FROM h2h_games
     """
     engine = init_connection()
-    return pd.read_sql(query, engine, params=[
-        home_team, away_team,
-        away_team, home_team,
-        home_team, away_team,
-        home_team, home_team,
-        home_team, home_team
-    ]).iloc[0]
+    # Pass parameters as a dictionary
+    params = {
+        'home': home_team,
+        'away': away_team
+    }
+    return pd.read_sql(query, engine, params=params).iloc[0]
 
 def get_recent_form(team, games_limit=5):
     """Get team's recent form with proper column references"""
@@ -228,7 +218,7 @@ def get_recent_form(team, games_limit=5):
     WITH recent_results AS (
         SELECT 
             CASE 
-                WHEN home_team = %s THEN 
+                WHEN home_team = %(team)s THEN 
                     CASE WHEN CAST(home_team_score AS INTEGER) > CAST(away_team_score AS INTEGER) 
                     THEN 1 ELSE 0 END
                 ELSE 
@@ -236,18 +226,18 @@ def get_recent_form(team, games_limit=5):
                     THEN 1 ELSE 0 END
             END as is_win,
             CASE 
-                WHEN home_team = %s THEN CAST(home_team_score AS INTEGER)
+                WHEN home_team = %(team)s THEN CAST(home_team_score AS INTEGER)
                 ELSE CAST(away_team_score AS INTEGER)
             END as goals_scored,
             CASE 
-                WHEN home_team = %s THEN CAST(away_team_score AS INTEGER)
+                WHEN home_team = %(team)s THEN CAST(away_team_score AS INTEGER)
                 ELSE CAST(home_team_score AS INTEGER)
             END as goals_conceded,
             status
         FROM nhl24_results
-        WHERE home_team = %s OR away_team = %s
+        WHERE home_team = %(team)s OR away_team = %(team)s
         ORDER BY game_date DESC
-        LIMIT %s
+        LIMIT %(limit)s
     )
     SELECT 
         AVG(is_win::float) as recent_win_rate,
@@ -257,22 +247,19 @@ def get_recent_form(team, games_limit=5):
     FROM recent_results
     """
     engine = init_connection()
-    return pd.read_sql(query, engine, params=[
-        team, team, team, team, team, games_limit
-    ]).iloc[0]
+    return pd.read_sql(query, engine, params={'team': team, 'limit': games_limit}).iloc[0]
 
 def safe_get(stats, key, default=0.0):
     try:
         val = stats.get(key, default)
         if val is None or pd.isna(val):
-            return default
-        return float(val)
+            return float(default)
+        return float(val)  # Always convert to float
     except (TypeError, ValueError):
-        return default
+        return float(default)  # Always return float
 
 
 def prepare_features(home_team, away_team, home_odds, away_odds, draw_odds):
-    """Prepare features for prediction matching the elite model's feature set"""
     try:
         # Get all required stats
         home_stats = get_team_stats(home_team)
@@ -288,47 +275,36 @@ def prepare_features(home_team, away_team, home_odds, away_odds, draw_odds):
         market_efficiency = home_implied_prob + away_implied_prob + draw_implied_prob
 
         # Create features dictionary matching the elite model's feature set
-        features = {
-            # Recent form metrics
+        features = pd.DataFrame([{  # Change this line to create DataFrame directly
             'home_recent_wins': safe_get(home_form, 'recent_win_rate', 0.5),
             'home_recent_goals_avg': safe_get(home_stats, 'goalsFor', 2.5),
             'home_recent_goals_allowed': safe_get(home_stats, 'goalsAgainst', 2.5),
             'away_recent_wins': safe_get(away_form, 'recent_win_rate', 0.5),
             'away_recent_goals_avg': safe_get(away_stats, 'goalsFor', 2.5),
             'away_recent_goals_allowed': safe_get(away_stats, 'goalsAgainst', 2.5),
-
-            # Head to head metrics
             'h2h_home_win_pct': safe_get(h2h_stats, 'home_team_wins', 0) / max(h2h_stats['games_played'], 1),
             'h2h_games_played': safe_get(h2h_stats, 'games_played', 0),
             'h2h_avg_total_goals': safe_get(h2h_stats, 'avg_total_goals', 5.0),
-
-            # Goalie metrics
             'home_goalie_save_pct': safe_get(home_stats, 'goalie_save_percentage', 0.9),
             'home_goalie_games': safe_get(home_stats, 'goalie_games', 1),
             'away_goalie_save_pct': safe_get(away_stats, 'goalie_save_percentage', 0.9),
             'away_goalie_games': safe_get(away_stats, 'goalie_games', 1),
-
-            # Team scoring metrics
             'home_team_goals_per_game': safe_get(home_stats, 'goalsFor', 2.5),
             'home_team_top_scorer_goals': safe_get(home_stats, 'top_scorer_goals', 0),
             'away_team_goals_per_game': safe_get(away_stats, 'goalsFor', 2.5),
             'away_team_top_scorer_goals': safe_get(away_stats, 'top_scorer_goals', 0),
-
-            # Advanced stats
             'home_xGoalsPercentage': safe_get(home_stats, 'xGoalsPercentage', 50.0),
             'home_corsiPercentage': safe_get(home_stats, 'corsiPercentage', 50.0),
             'home_fenwickPercentage': safe_get(home_stats, 'fenwickPercentage', 50.0),
             'away_xGoalsPercentage': safe_get(away_stats, 'xGoalsPercentage', 50.0),
             'away_corsiPercentage': safe_get(away_stats, 'corsiPercentage', 50.0),
             'away_fenwickPercentage': safe_get(away_stats, 'fenwickPercentage', 50.0),
-
-            # Market-based features
             'home_implied_prob_normalized': home_implied_prob / market_efficiency,
             'away_implied_prob_normalized': away_implied_prob / market_efficiency,
             'draw_implied_prob_normalized': draw_implied_prob / market_efficiency
-        }
+        }])
 
-        return pd.DataFrame([features]), home_stats, away_stats, h2h_stats
+        return features, home_stats, away_stats, h2h_stats
 
     except Exception as e:
         st.error(f"Failed to prepare features: {str(e)}")
@@ -1044,9 +1020,9 @@ def create_visualization(home_team, away_team, home_stats, away_stats, probabili
         ax4 = fig.add_subplot(gs[1, 1])
         if h2h_stats['games_played'] > 0:
             h2h_data = [
-                h2h_stats['home_team_wins'],
-                h2h_stats['games_played'] - h2h_stats['home_team_wins'],
-                h2h_stats['overtime_rate'] * h2h_stats['games_played']
+                float(h2h_stats['home_team_wins']),
+                float(h2h_stats['games_played'] - h2h_stats['home_team_wins']),
+                float(h2h_stats['overtime_games'])  # Use the raw overtime_games count
             ]
             h2h_labels = [f'{home_team}\nWins', f'{away_team}\nWins', 'OT/SO\nGames']
             colors = ['#66b3ff', '#ff9999', '#99ff99']
