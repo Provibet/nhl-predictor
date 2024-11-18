@@ -281,14 +281,14 @@ def safe_get(stats, key, default=0.0):
 
 def prepare_features(home_team, away_team, home_odds, away_odds, draw_odds):
     try:
-        # Get all required stats
+        # Get all required stats first
         home_stats = get_team_stats(home_team)
         away_stats = get_team_stats(away_team)
         h2h_stats = get_head_to_head_stats(home_team, away_team)
         home_form = get_recent_form(home_team)
         away_form = get_recent_form(away_team)
 
-        # Single debug expander with all information
+        # Debug first before any feature calculations
         with st.expander("Debug Information"):
             st.subheader("📊 Raw Stats")
             col1, col2 = st.columns(2)
@@ -299,16 +299,13 @@ def prepare_features(home_team, away_team, home_odds, away_odds, draw_odds):
                 st.write(f"{away_team} Stats:")
                 st.json(dict(away_stats))
 
-            st.subheader("Head to Head Stats")
-            st.json(dict(h2h_stats))
-
         # Calculate market probabilities
         home_implied_prob = 1 / float(home_odds) if float(home_odds) != 0 else 0.33
         away_implied_prob = 1 / float(away_odds) if float(away_odds) != 0 else 0.33
         draw_implied_prob = 1 / float(draw_odds) if float(draw_odds) != 0 else 0.33
         market_efficiency = home_implied_prob + away_implied_prob + draw_implied_prob
 
-        # Create relative ratios for features
+        # Create features with exact column names
         features = pd.DataFrame([{
             # H2H features remain unchanged
             'h2h_home_win_pct': safe_get(h2h_stats, 'home_team_wins', 0) / max(h2h_stats['games_played'], 1),
@@ -316,15 +313,15 @@ def prepare_features(home_team, away_team, home_odds, away_odds, draw_odds):
             'h2h_avg_total_goals': safe_get(h2h_stats, 'avg_total_goals', 5.0),
             'draw_implied_prob_normalized': draw_implied_prob / market_efficiency,
 
-            # Create relative ratios for all paired metrics
+            # Create relative ratios using exact column names
             'relative_recent_wins_ratio': safe_get(home_form, 'recent_win_rate', 0.5) /
                                           max(safe_get(away_form, 'recent_win_rate', 0.5), 0.001),
 
-            'relative_recent_goals_avg_ratio': safe_get(home_stats, 'goalsFor', 2.5) /
-                                               max(safe_get(away_stats, 'goalsFor', 2.5), 0.001),
+            'relative_recent_goals_avg_ratio': safe_get(home_stats, 'goalsfor', 2.5) /
+                                               max(safe_get(away_stats, 'goalsfor', 2.5), 0.001),
 
-            'relative_recent_goals_allowed_ratio': safe_get(home_stats, 'goalsAgainst', 2.5) /
-                                                   max(safe_get(away_stats, 'goalsAgainst', 2.5), 0.001),
+            'relative_recent_goals_allowed_ratio': safe_get(home_stats, 'goalsagainst', 2.5) /
+                                                   max(safe_get(away_stats, 'goalsagainst', 2.5), 0.001),
 
             'relative_goalie_save_pct_ratio': safe_get(home_stats, 'goalie_save_percentage', 0.9) /
                                               max(safe_get(away_stats, 'goalie_save_percentage', 0.9), 0.001),
@@ -332,8 +329,8 @@ def prepare_features(home_team, away_team, home_odds, away_odds, draw_odds):
             'relative_goalie_games_ratio': safe_get(home_stats, 'goalie_games', 1) /
                                            max(safe_get(away_stats, 'goalie_games', 1), 0.001),
 
-            'relative_team_goals_per_game_ratio': safe_get(home_stats, 'goalsFor', 2.5) /
-                                                  max(safe_get(away_stats, 'goalsFor', 2.5), 0.001),
+            'relative_team_goals_per_game_ratio': safe_get(home_stats, 'goalsfor', 2.5) /
+                                                  max(safe_get(away_stats, 'goalsfor', 2.5), 0.001),
 
             'relative_team_top_scorer_goals_ratio': safe_get(home_stats, 'top_scorer_goals', 0) /
                                                     max(safe_get(away_stats, 'top_scorer_goals', 0), 0.001),
@@ -341,22 +338,21 @@ def prepare_features(home_team, away_team, home_odds, away_odds, draw_odds):
             'relative_implied_prob_normalized_ratio': (home_implied_prob / market_efficiency) /
                                                       max((away_implied_prob / market_efficiency), 0.001),
 
-            'relative_xGoalsPercentage_ratio': safe_get(home_stats, 'xGoalsPercentage', 50.0) /
-                                               max(safe_get(away_stats, 'xGoalsPercentage', 50.0), 0.001),
+            'relative_xGoalsPercentage_ratio': safe_get(home_stats, 'xgoalspercentage', 50.0) /
+                                               max(safe_get(away_stats, 'xgoalspercentage', 50.0), 0.001),
 
-            'relative_corsiPercentage_ratio': safe_get(home_stats, 'corsiPercentage', 50.0) /
-                                              max(safe_get(away_stats, 'corsiPercentage', 50.0), 0.001),
+            'relative_corsiPercentage_ratio': safe_get(home_stats, 'corsipercentage', 50.0) /
+                                              max(safe_get(away_stats, 'corsipercentage', 50.0), 0.001),
 
-            'relative_fenwickPercentage_ratio': safe_get(home_stats, 'fenwickPercentage', 50.0) /
-                                                max(safe_get(away_stats, 'fenwickPercentage', 50.0), 0.001)
+            'relative_fenwickPercentage_ratio': safe_get(home_stats, 'fenwickpercentage', 50.0) /
+                                                max(safe_get(away_stats, 'fenwickpercentage', 50.0), 0.001)
         }])
 
-        # Add debug information for final features in the same expander
+        # Debug generated features
         with st.expander("Generated Features"):
             st.write("🔄 Model Input Features:")
             st.dataframe(features)
 
-            # Check for zeros
             features_dict = features.iloc[0].to_dict()
             zero_features = [k for k, v in features_dict.items() if v == 0]
             if zero_features:
@@ -366,6 +362,8 @@ def prepare_features(home_team, away_team, home_odds, away_odds, draw_odds):
 
     except Exception as e:
         st.error(f"Failed to prepare features: {str(e)}")
+        st.write("Debug - Home Stats Keys:", home_stats.index.tolist())
+        st.write("Debug - Away Stats Keys:", away_stats.index.tolist())
         raise
 
 # Page config
