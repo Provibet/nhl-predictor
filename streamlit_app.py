@@ -99,61 +99,167 @@ def get_teams():
     return teams['team'].tolist()
 
 def get_team_stats(team):
-    engine = init_connection()
-    query = f"""
+    """Get comprehensive team statistics with proper column references"""
+    query = """
+    WITH recent_games AS (
+        SELECT 
+            team,
+            "goalsFor",
+            "goalsAgainst",
+            "xGoalsPercentage",
+            "corsiPercentage",
+            "fenwickPercentage",
+            "shotsOnGoalFor",
+            "shotsOnGoalAgainst",
+            "highDangerShotsFor",
+            "highDangerGoalsFor",
+            "xGoalsFor",
+            "xGoalsAgainst",
+            "highDangerGoalsAgainst",
+            "mediumDangerGoalsFor",
+            "mediumDangerGoalsAgainst",
+            "penaltiesFor",
+            "penaltiesAgainst",
+            "takeawaysFor",
+            "giveawaysFor"
+        FROM nhl24_matchups_with_situations
+        WHERE team = %s
+        ORDER BY games_played DESC
+        LIMIT 10
+    ),
+    goalie_stats AS (
+        SELECT 
+            team,
+            MAX(save_percentage) as best_save_percentage,
+            MAX(games_played) as most_games_played
+        FROM nhl24_goalie_stats
+        WHERE team = %s
+        GROUP BY team
+    ),
+    skater_stats AS (
+        SELECT 
+            team,
+            MAX(goals) as top_scorer_goals,
+            COUNT(*) as num_players
+        FROM nhl24_skater_stats
+        WHERE team = %s AND position != 'G'
+        GROUP BY team
+    )
     SELECT 
-        AVG("goalsFor") as recent_goals_for,
-        AVG("goalsAgainst") as recent_goals_against,
-        AVG("xGoalsPercentage") as recent_xgoals_pct,
-        AVG("corsiPercentage") as recent_corsi_pct,
-        AVG("fenwickPercentage") as recent_fenwick_pct,
-        AVG("shotsOnGoalFor") as recent_shots_for,
-        AVG("shotsOnGoalAgainst") as recent_shots_against,
-        AVG("highDangerShotsFor") as recent_hd_shots_for,
-        AVG("highDangerGoalsFor") as recent_hd_goals_for,
-        AVG("xGoalsFor") as recent_xgoals_for,
-        AVG("xGoalsAgainst") as recent_xgoals_against,
-        COUNT(*) as games_played
-    FROM nhl24_matchups_with_situations
-    WHERE team = '{team}'
+        AVG(rg."goalsFor") as goalsFor,
+        AVG(rg."goalsAgainst") as goalsAgainst,
+        AVG(rg."xGoalsPercentage") as xGoalsPercentage,
+        AVG(rg."corsiPercentage") as corsiPercentage,
+        AVG(rg."fenwickPercentage") as fenwickPercentage,
+        AVG(rg."shotsOnGoalFor") as recent_shots_for,
+        AVG(rg."shotsOnGoalAgainst") as recent_shots_against,
+        AVG(rg."highDangerShotsFor") as recent_hd_shots_for,
+        AVG(rg."highDangerGoalsFor") as recent_hd_goals_for,
+        AVG(rg."xGoalsFor") as recent_xgoals_for,
+        AVG(rg."xGoalsAgainst") as recent_xgoals_against,
+        COUNT(CASE WHEN rg."goalsFor" > rg."goalsAgainst" THEN 1 END)::float / 
+            NULLIF(COUNT(*), 0) as win_percentage,
+        gs.best_save_percentage as goalie_save_percentage,
+        gs.most_games_played as goalie_games,
+        ss.top_scorer_goals,
+        AVG(rg."takeawaysFor" - rg."giveawaysFor") as possession_diff,
+        AVG(rg."highDangerGoalsFor" + rg."mediumDangerGoalsFor") as danger_goals_for,
+        AVG(rg."highDangerGoalsAgainst" + rg."mediumDangerGoalsAgainst") as danger_goals_against,
+        AVG(rg."penaltiesFor"::float / NULLIF(rg."penaltiesAgainst", 0)) as special_teams_ratio
+    FROM recent_games rg
+    LEFT JOIN goalie_stats gs ON rg.team = gs.team
+    LEFT JOIN skater_stats ss ON rg.team = ss.team
+    GROUP BY gs.best_save_percentage, gs.most_games_played, ss.top_scorer_goals
     """
-    return pd.read_sql(query, engine).iloc[0]
+    engine = init_connection()
+    return pd.read_sql(query, engine, params=[team, team, team]).iloc[0]
 
 def get_head_to_head_stats(home_team, away_team):
-    engine = init_connection()
-    query = f"""
+    """Get head-to-head statistics with proper column references"""
+    query = """
     WITH h2h_games AS (
         SELECT 
             home_team,
             away_team,
             CAST(home_team_score AS INTEGER) as home_score,
             CAST(away_team_score AS INTEGER) as away_score,
-            CAST(home_team_score AS INTEGER) + CAST(away_team_score AS INTEGER) as total_goals
+            CAST(home_team_score AS INTEGER) + CAST(away_team_score AS INTEGER) as total_goals,
+            status
         FROM nhl24_results
-        WHERE (home_team = '{home_team}' AND away_team = '{away_team}')
-           OR (home_team = '{away_team}' AND away_team = '{home_team}')
+        WHERE (home_team = %s AND away_team = %s)
+           OR (home_team = %s AND away_team = %s)
         ORDER BY game_date DESC
         LIMIT 10
+    ),
+    team_stats AS (
+        SELECT 
+            m.team,
+            AVG(m."xGoalsPercentage") as avg_xgoals_pct,
+            AVG(m."corsiPercentage") as avg_corsi_pct
+        FROM nhl24_matchups_with_situations m
+        WHERE m.team IN (%s, %s)
+        GROUP BY m.team
     )
     SELECT 
         COALESCE(AVG(total_goals), 0) as avg_total_goals,
-        COALESCE(STDDEV(total_goals), 0) as std_total_goals,
         COUNT(*) as games_played,
-        COALESCE(SUM(CASE 
-            WHEN home_team = '{home_team}' AND home_score > away_score THEN 1
-            WHEN away_team = '{home_team}' AND away_score > home_score THEN 1
+        SUM(CASE 
+            WHEN home_team = %s AND home_score > away_score THEN 1
+            WHEN away_team = %s AND away_score > home_score THEN 1
             ELSE 0 
-        END), 0) as home_team_wins,
-        COALESCE(SUM(CASE 
-            WHEN home_team = '{away_team}' AND home_score > away_score THEN 1
-            WHEN away_team = '{away_team}' AND away_score > home_score THEN 1
-            ELSE 0 
-        END), 0) as away_team_wins,
-        COALESCE(AVG(CASE WHEN home_team = '{home_team}' THEN home_score ELSE away_score END), 0) as home_team_avg_goals,
-        COALESCE(AVG(CASE WHEN home_team = '{away_team}' THEN home_score ELSE away_score END), 0) as away_team_avg_goals
+        END) as home_team_wins,
+        AVG(CASE WHEN home_team = %s THEN home_score ELSE away_score END) as home_team_avg_goals,
+        AVG(CASE WHEN home_team = %s THEN away_score ELSE home_score END) as away_team_avg_goals,
+        COUNT(CASE WHEN status NOT IN ('Final', 'Regulation') THEN 1 END) as overtime_games
     FROM h2h_games
     """
-    return pd.read_sql(query, engine).iloc[0]
+    engine = init_connection()
+    return pd.read_sql(query, engine, params=[
+        home_team, away_team,
+        away_team, home_team,
+        home_team, away_team,
+        home_team, home_team,
+        home_team, home_team
+    ]).iloc[0]
+
+def get_recent_form(team, games_limit=5):
+    """Get team's recent form with proper column references"""
+    query = """
+    WITH recent_results AS (
+        SELECT 
+            CASE 
+                WHEN home_team = %s THEN 
+                    CASE WHEN CAST(home_team_score AS INTEGER) > CAST(away_team_score AS INTEGER) 
+                    THEN 1 ELSE 0 END
+                ELSE 
+                    CASE WHEN CAST(away_team_score AS INTEGER) > CAST(home_team_score AS INTEGER) 
+                    THEN 1 ELSE 0 END
+            END as is_win,
+            CASE 
+                WHEN home_team = %s THEN CAST(home_team_score AS INTEGER)
+                ELSE CAST(away_team_score AS INTEGER)
+            END as goals_scored,
+            CASE 
+                WHEN home_team = %s THEN CAST(away_team_score AS INTEGER)
+                ELSE CAST(home_team_score AS INTEGER)
+            END as goals_conceded,
+            status
+        FROM nhl24_results
+        WHERE home_team = %s OR away_team = %s
+        ORDER BY game_date DESC
+        LIMIT %s
+    )
+    SELECT 
+        AVG(is_win::float) as recent_win_rate,
+        AVG(goals_scored) as avg_goals_scored,
+        AVG(goals_conceded) as avg_goals_conceded,
+        COUNT(CASE WHEN status NOT IN ('Final', 'Regulation') THEN 1 END) as overtime_games
+    FROM recent_results
+    """
+    engine = init_connection()
+    return pd.read_sql(query, engine, params=[
+        team, team, team, team, team, games_limit
+    ]).iloc[0]
 
 def safe_get(stats, key, default=0.0):
     try:
@@ -166,80 +272,63 @@ def safe_get(stats, key, default=0.0):
 
 
 def prepare_features(home_team, away_team, home_odds, away_odds, draw_odds):
-    """Prepare features for prediction"""
+    """Prepare features for prediction matching the elite model's feature set"""
     try:
-        # Get team stats
+        # Get all required stats
         home_stats = get_team_stats(home_team)
         away_stats = get_team_stats(away_team)
         h2h_stats = get_head_to_head_stats(home_team, away_team)
+        home_form = get_recent_form(home_team)
+        away_form = get_recent_form(away_team)
 
-        # Calculate implied probabilities
+        # Calculate market probabilities
         home_implied_prob = 1 / float(home_odds) if float(home_odds) != 0 else 0.33
         away_implied_prob = 1 / float(away_odds) if float(away_odds) != 0 else 0.33
         draw_implied_prob = 1 / float(draw_odds) if float(draw_odds) != 0 else 0.33
         market_efficiency = home_implied_prob + away_implied_prob + draw_implied_prob
 
-        # Create features dictionary with all required features
+        # Create features dictionary matching the elite model's feature set
         features = {
-            # Original features (used by other parts of the app)
-            'home_recent_wins': safe_get(home_stats, 'recent_wins', 0.5),
-            'home_recent_goals_avg': safe_get(home_stats, 'recent_goals_for', 2.5),
-            'home_recent_goals_allowed': safe_get(home_stats, 'recent_goals_against', 2.5),
-            'away_recent_wins': safe_get(away_stats, 'recent_wins', 0.5),
-            'away_recent_goals_avg': safe_get(away_stats, 'recent_goals_for', 2.5),
-            'away_recent_goals_allowed': safe_get(away_stats, 'recent_goals_against', 2.5),
+            # Recent form metrics
+            'home_recent_wins': safe_get(home_form, 'recent_win_rate', 0.5),
+            'home_recent_goals_avg': safe_get(home_stats, 'goalsFor', 2.5),
+            'home_recent_goals_allowed': safe_get(home_stats, 'goalsAgainst', 2.5),
+            'away_recent_wins': safe_get(away_form, 'recent_win_rate', 0.5),
+            'away_recent_goals_avg': safe_get(away_stats, 'goalsFor', 2.5),
+            'away_recent_goals_allowed': safe_get(away_stats, 'goalsAgainst', 2.5),
+
+            # Head to head metrics
             'h2h_home_win_pct': safe_get(h2h_stats, 'home_team_wins', 0) / max(h2h_stats['games_played'], 1),
             'h2h_games_played': safe_get(h2h_stats, 'games_played', 0),
             'h2h_avg_total_goals': safe_get(h2h_stats, 'avg_total_goals', 5.0),
-            'home_goalie_save_pct': safe_get(home_stats, 'save_percentage', 0.9),
+
+            # Goalie metrics
+            'home_goalie_save_pct': safe_get(home_stats, 'goalie_save_percentage', 0.9),
             'home_goalie_games': safe_get(home_stats, 'goalie_games', 1),
-            'away_goalie_save_pct': safe_get(away_stats, 'save_percentage', 0.9),
+            'away_goalie_save_pct': safe_get(away_stats, 'goalie_save_percentage', 0.9),
             'away_goalie_games': safe_get(away_stats, 'goalie_games', 1),
-            'home_team_goals_per_game': safe_get(home_stats, 'goals_per_game', 2.5),
-            'home_team_top_scorer_goals': safe_get(home_stats, 'top_scorer_goals', 2.5),
-            'away_team_goals_per_game': safe_get(away_stats, 'goals_per_game', 2.5),
-            'away_team_top_scorer_goals': safe_get(away_stats, 'top_scorer_goals', 2.5),
+
+            # Team scoring metrics
+            'home_team_goals_per_game': safe_get(home_stats, 'goalsFor', 2.5),
+            'home_team_top_scorer_goals': safe_get(home_stats, 'top_scorer_goals', 0),
+            'away_team_goals_per_game': safe_get(away_stats, 'goalsFor', 2.5),
+            'away_team_top_scorer_goals': safe_get(away_stats, 'top_scorer_goals', 0),
+
+            # Advanced stats
+            'home_xGoalsPercentage': safe_get(home_stats, 'xGoalsPercentage', 50.0),
+            'home_corsiPercentage': safe_get(home_stats, 'corsiPercentage', 50.0),
+            'home_fenwickPercentage': safe_get(home_stats, 'fenwickPercentage', 50.0),
+            'away_xGoalsPercentage': safe_get(away_stats, 'xGoalsPercentage', 50.0),
+            'away_corsiPercentage': safe_get(away_stats, 'corsiPercentage', 50.0),
+            'away_fenwickPercentage': safe_get(away_stats, 'fenwickPercentage', 50.0),
+
+            # Market-based features
             'home_implied_prob_normalized': home_implied_prob / market_efficiency,
             'away_implied_prob_normalized': away_implied_prob / market_efficiency,
-            'draw_implied_prob_normalized': draw_implied_prob / market_efficiency,
-
-            # Balanced ratio features (used by the model)
-            'relative_recent_wins_ratio': safe_get(home_stats, 'recent_wins', 0.5) /
-                                          max(safe_get(away_stats, 'recent_wins', 0.5), 0.0001),
-            'relative_recent_goals_avg_ratio': safe_get(home_stats, 'recent_goals_for', 2.5) /
-                                               max(safe_get(away_stats, 'recent_goals_for', 2.5), 0.0001),
-            'relative_recent_goals_allowed_ratio': safe_get(home_stats, 'recent_goals_against', 2.5) /
-                                                   max(safe_get(away_stats, 'recent_goals_against', 2.5), 0.0001),
-            'relative_goalie_save_pct_ratio': safe_get(home_stats, 'save_percentage', 0.9) /
-                                              max(safe_get(away_stats, 'save_percentage', 0.9), 0.0001),
-            'relative_goalie_games_ratio': safe_get(home_stats, 'goalie_games', 1) /
-                                           max(safe_get(away_stats, 'goalie_games', 1), 0.0001),
-            'relative_team_goals_per_game_ratio': safe_get(home_stats, 'goals_per_game', 2.5) /
-                                                  max(safe_get(away_stats, 'goals_per_game', 2.5), 0.0001),
-            'relative_team_top_scorer_goals_ratio': safe_get(home_stats, 'top_scorer_goals', 2.5) /
-                                                    max(safe_get(away_stats, 'top_scorer_goals', 2.5), 0.0001),
-            'relative_implied_prob_normalized_ratio': (home_implied_prob / market_efficiency) /
-                                                      max((away_implied_prob / market_efficiency), 0.0001)
+            'draw_implied_prob_normalized': draw_implied_prob / market_efficiency
         }
 
-        # Create DataFrame with all features
-        df = pd.DataFrame([features])
-
-        # Select only the features needed for the model prediction
-        model_features = df[[
-            'h2h_home_win_pct', 'h2h_games_played', 'h2h_avg_total_goals',
-            'draw_implied_prob_normalized',
-            'relative_recent_wins_ratio',
-            'relative_recent_goals_avg_ratio',
-            'relative_recent_goals_allowed_ratio',
-            'relative_goalie_save_pct_ratio',
-            'relative_goalie_games_ratio',
-            'relative_team_goals_per_game_ratio',
-            'relative_team_top_scorer_goals_ratio',
-            'relative_implied_prob_normalized_ratio'
-        ]]
-
-        return model_features, home_stats, away_stats, h2h_stats
+        return pd.DataFrame([features]), home_stats, away_stats, h2h_stats
 
     except Exception as e:
         st.error(f"Failed to prepare features: {str(e)}")
@@ -856,14 +945,12 @@ def add_betting_recommendations(st, home_team, away_team, home_prob, away_prob, 
 
 
 def create_visualization(home_team, away_team, home_stats, away_stats, probabilities, h2h_stats):
-    """Create visualization charts"""
+    """Create enhanced visualization charts"""
     try:
         fig = plt.Figure(figsize=(12, 8), dpi=100)
-
-        # Create 2x2 subplots
         gs = fig.add_gridspec(2, 2, hspace=0.3, wspace=0.3)
 
-        # 1. Prediction Probability Pie Chart
+        # 1. Enhanced Prediction Probability Pie Chart
         ax1 = fig.add_subplot(gs[0, 0])
         labels = [
             f'{away_team}\n{probabilities[0]:.1%}',
@@ -871,65 +958,75 @@ def create_visualization(home_team, away_team, home_stats, away_stats, probabili
             f'Draw\n{probabilities[2]:.1%}'
         ]
         colors = ['#ff9999', '#66b3ff', '#99ff99']
-        ax1.pie(probabilities, labels=labels, colors=colors, autopct='%1.1f%%')
-        ax1.set_title('Prediction Probabilities')
+        explode = (0.1, 0.1, 0.1)
+        wedges, texts, autotexts = ax1.pie(probabilities, explode=explode,
+                                           labels=labels, colors=colors,
+                                           autopct='%1.1f%%', shadow=True)
+        ax1.set_title('Prediction Probabilities', pad=20)
 
-        # 2. Recent Form Comparison Bar Chart
+        # 2. Advanced Metrics Comparison
         ax2 = fig.add_subplot(gs[0, 1])
-        metrics = ['Goals', 'xGoals', 'HD Goals']
+        metrics = ['xG%', 'Corsi%', 'Fenwick%']
         home_values = [
-            float(safe_get(home_stats, 'recent_goals_for', 2.5)),
-            float(safe_get(home_stats, 'recent_xgoals_for', 2.5)),
-            float(safe_get(home_stats, 'recent_hd_goals_for', 1.0))
+            safe_get(home_stats, 'xGoalsPercentage', 50),
+            safe_get(home_stats, 'corsiPercentage', 50),
+            safe_get(home_stats, 'fenwickPercentage', 50)
         ]
         away_values = [
-            float(safe_get(away_stats, 'recent_goals_for', 2.5)),
-            float(safe_get(away_stats, 'recent_xgoals_for', 2.5)),
-            float(safe_get(away_stats, 'recent_hd_goals_for', 1.0))
+            safe_get(away_stats, 'xGoalsPercentage', 50),
+            safe_get(away_stats, 'corsiPercentage', 50),
+            safe_get(away_stats, 'fenwickPercentage', 50)
         ]
 
         x = np.arange(len(metrics))
         width = 0.35
-        ax2.bar(x - width/2, home_values, width, label=home_team, color='#66b3ff')
-        ax2.bar(x + width/2, away_values, width, label=away_team, color='#ff9999')
+        ax2.bar(x - width / 2, home_values, width, label=home_team, color='#66b3ff', alpha=0.8)
+        ax2.bar(x + width / 2, away_values, width, label=away_team, color='#ff9999', alpha=0.8)
         ax2.set_xticks(x)
         ax2.set_xticklabels(metrics)
         ax2.legend()
-        ax2.set_title('Recent Offensive Metrics')
+        ax2.set_title('Advanced Metrics Comparison')
+        ax2.set_ylim(0, 100)
+        ax2.grid(True, alpha=0.3)
 
-        # 3. Advanced Stats Radar Chart
+        # 3. Enhanced Offensive Output Radar Chart
         ax3 = fig.add_subplot(gs[1, 0], projection='polar')
-        categories = ['Goals/Game', 'Shots/Game', 'HD Chances', 'HD Goals', 'Win Rate']
+        categories = [
+            'Goals/Game', 'xG/Game',
+            'High Danger\nChances', 'Shot\nAttempts',
+            'Special Teams\nRatio'
+        ]
 
-        # Scale factors
-        SHOTS_SCALE = 100 / 40
-        GOALS_SCALE = 100 / 5
-        HD_SCALE = 100 / 20
-        HDG_SCALE = 100 / 5
+        # Scale factors for radar chart
+        goals_scale = 100 / 5  # Assuming 5 goals is max
+        xg_scale = 100 / 4  # Assuming 4 xG is max
+        hd_scale = 100 / 15  # Assuming 15 high danger chances is max
+        shots_scale = 100 / 40  # Assuming 40 shots is max
+        st_scale = 100 / 2  # Assuming 2.0 ratio is max
 
-        # Get values with proper scaling
+        # Get scaled values
         home_values = [
-            float(safe_get(home_stats, 'recent_goals_for', 3)) * GOALS_SCALE,
-            float(safe_get(home_stats, 'recent_shots_for', 30)) * SHOTS_SCALE,
-            float(safe_get(home_stats, 'recent_hd_shots_for', 10)) * HD_SCALE,
-            float(safe_get(home_stats, 'recent_hd_goals_for', 2)) * HDG_SCALE,
-            float(safe_get(home_stats, 'games_played', 1)) * 100
+            safe_get(home_stats, 'goalsFor', 2.5) * goals_scale,
+            safe_get(home_stats, 'xGoalsFor', 2) * xg_scale,
+            safe_get(home_stats, 'highDangerShotsFor', 8) * hd_scale,
+            safe_get(home_stats, 'shotAttemptsFor', 30) * shots_scale,
+            safe_get(home_stats, 'penaltiesFor', 1) * st_scale
         ]
 
         away_values = [
-            float(safe_get(away_stats, 'recent_goals_for', 3)) * GOALS_SCALE,
-            float(safe_get(away_stats, 'recent_shots_for', 30)) * SHOTS_SCALE,
-            float(safe_get(away_stats, 'recent_hd_shots_for', 10)) * HD_SCALE,
-            float(safe_get(away_stats, 'recent_hd_goals_for', 2)) * HDG_SCALE,
-            float(safe_get(away_stats, 'games_played', 1)) * 100
+            safe_get(away_stats, 'goalsFor', 2.5) * goals_scale,
+            safe_get(away_stats, 'xGoalsFor', 2) * xg_scale,
+            safe_get(away_stats, 'highDangerShotsFor', 8) * hd_scale,
+            safe_get(away_stats, 'shotAttemptsFor', 30) * shots_scale,
+            safe_get(away_stats, 'penaltiesFor', 1) * st_scale
         ]
 
         # Normalize values
         home_values = np.clip(home_values, 0, 100)
         away_values = np.clip(away_values, 0, 100)
 
-        angles = np.linspace(0, 2*np.pi, len(categories), endpoint=False)
-        angles = np.concatenate((angles, [angles[0]]))
+        angles = np.linspace(0, 2 * np.pi, len(categories), endpoint=False)
+        angles = np.concatenate((angles, [angles[0]]))  # complete the circle
         home_values = np.concatenate((home_values, [home_values[0]]))
         away_values = np.concatenate((away_values, [away_values[0]]))
 
@@ -940,23 +1037,35 @@ def create_visualization(home_team, away_team, home_stats, away_stats, probabili
 
         ax3.set_xticks(angles[:-1])
         ax3.set_xticklabels(categories)
-        ax3.set_rticks([20, 40, 60, 80, 100])
-        ax3.set_rlabel_position(0)
+        ax3.set_ylim(0, 100)
         ax3.legend(loc='upper right', bbox_to_anchor=(0.1, 0.1))
-        ax3.set_title('Key Performance Metrics', pad=15)
-        ax3.grid(True)
 
-        # 4. H2H Results Summary
+        # 4. Head-to-Head Summary with Enhanced Stats
         ax4 = fig.add_subplot(gs[1, 1])
         if h2h_stats['games_played'] > 0:
-            h2h_labels = [f'{home_team}\nWins', f'{away_team}\nWins', 'Draws']
-            h2h_values = [
+            h2h_data = [
                 h2h_stats['home_team_wins'],
-                h2h_stats['away_team_wins'],
-                h2h_stats['games_played'] - h2h_stats['home_team_wins'] - h2h_stats['away_team_wins']
+                h2h_stats['games_played'] - h2h_stats['home_team_wins'],
+                h2h_stats['overtime_rate'] * h2h_stats['games_played']
             ]
-            ax4.bar(h2h_labels, h2h_values, color=['#66b3ff', '#ff9999', '#99ff99'])
+            h2h_labels = [f'{home_team}\nWins', f'{away_team}\nWins', 'OT/SO\nGames']
+            colors = ['#66b3ff', '#ff9999', '#99ff99']
+
+            bars = ax4.bar(h2h_labels, h2h_data, color=colors)
             ax4.set_title('Head-to-Head Results')
+
+            # Add value labels on top of bars
+            for bar in bars:
+                height = bar.get_height()
+                ax4.text(bar.get_x() + bar.get_width() / 2., height,
+                         f'{int(height)}',
+                         ha='center', va='bottom')
+
+            # Add average goals annotation
+            ax4.text(0.5, -0.1,
+                     f'Avg Total Goals: {h2h_stats["avg_total_goals"]:.1f}',
+                     ha='center', transform=ax4.transAxes)
+
         else:
             ax4.text(0.5, 0.5, 'No H2H Data Available',
                      horizontalalignment='center',
@@ -964,12 +1073,177 @@ def create_visualization(home_team, away_team, home_stats, away_stats, probabili
             ax4.set_xticks([])
             ax4.set_yticks([])
 
-        fig.tight_layout()
+        plt.tight_layout()
         return fig
 
     except Exception as e:
         st.error(f"Failed to create visualization: {str(e)}")
         raise
+
+
+def add_performance_metrics(st, home_stats, away_stats):
+    """Add detailed performance metrics comparison"""
+    st.markdown("""
+        <div class="metric-container">
+            <h4 style='margin-top: 0;'>🎯 Performance Metrics Comparison</h4>
+        </div>
+        """, unsafe_allow_html=True)
+
+    col1, col2 = st.columns(2)
+
+    with col1:
+        metrics = {
+            "Expected Goals (xG)": ('xGoalsFor', 2),
+            "Shot Attempts": ('shotAttemptsFor', 30),
+            "High Danger Chances": ('highDangerShotsFor', 8),
+            "Save Percentage": ('best_save_percentage', 0.9)
+        }
+
+        for label, (key, default) in metrics.items():
+            home_val = safe_get(home_stats, key, default)
+            away_val = safe_get(away_stats, key, default)
+
+            # Determine which team is better for this metric
+            if key == 'best_save_percentage':
+                home_val = home_val * 100  # Convert to percentage
+                away_val = away_val * 100
+
+            better_team = '🏠' if home_val > away_val else '✈️' if away_val > home_val else '='
+
+            st.metric(
+                label=f"{label} {better_team}",
+                value=f"{home_val:.1f}" if key != 'best_save_percentage' else f"{home_val:.1f}%",
+                delta=f"{home_val - away_val:+.1f}",
+                delta_color="normal" if home_val >= away_val else "inverse"
+            )
+
+    with col2:
+        metrics = {
+            "Corsi %": ('corsiPercentage', 50),
+            "Fenwick %": ('fenwickPercentage', 50),
+            "Goals Per Game": ('goalsFor', 2.5),
+            "Special Teams Ratio": ('penaltiesFor', 1)
+        }
+
+        for label, (key, default) in metrics.items():
+            home_val = safe_get(home_stats, key, default)
+            away_val = safe_get(away_stats, key, default)
+            better_team = '🏠' if home_val > away_val else '✈️' if away_val > home_val else '='
+
+            st.metric(
+                label=f"{label} {better_team}",
+                value=f"{home_val:.1f}" + ("%" if "%" in label else ""),
+                delta=f"{home_val - away_val:+.1f}",
+                delta_color="normal" if home_val >= away_val else "inverse"
+            )
+
+
+def add_form_guide(st, home_team, away_team):
+    """Add recent form guide with last 5 games"""
+    home_form = get_recent_form(home_team)
+    away_form = get_recent_form(away_team)
+
+    st.markdown("""
+        <div class="metric-container">
+            <h4 style='margin-top: 0;'>📈 Recent Form Guide (Last 5 Games)</h4>
+        </div>
+        """, unsafe_allow_html=True)
+
+    col1, col2 = st.columns(2)
+
+    with col1:
+        st.markdown(f"**{home_team}**")
+        metrics = {
+            "Win Rate": ('recent_win_rate', 0.5),
+            "Goals Scored": ('avg_goals_scored', 2.5),
+            "Goals Conceded": ('avg_goals_conceded', 2.5),
+            "xG Performance": ('avg_xg_for', 2.0)
+        }
+
+        for label, (key, default) in metrics.items():
+            value = safe_get(home_form, key, default)
+            if label == "Win Rate":
+                st.metric(label, f"{value:.1%}")
+            else:
+                st.metric(label, f"{value:.2f}")
+
+    with col2:
+        st.markdown(f"**{away_team}**")
+        for label, (key, default) in metrics.items():
+            value = safe_get(away_form, key, default)
+            if label == "Win Rate":
+                st.metric(label, f"{value:.1%}")
+            else:
+                st.metric(label, f"{value:.2f}")
+
+
+def add_betting_insights(st, home_prob, away_prob, draw_prob, home_odds, away_odds, draw_odds):
+    """Add betting insights and value analysis"""
+    st.markdown("""
+        <div class="metric-container">
+            <h4 style='margin-top: 0;'>💰 Betting Value Analysis</h4>
+        </div>
+        """, unsafe_allow_html=True)
+
+    # Calculate implied probabilities from odds
+    home_implied = 1 / home_odds
+    away_implied = 1 / away_odds
+    draw_implied = 1 / draw_odds
+    total_implied = home_implied + away_implied + draw_implied
+
+    # Normalize implied probabilities
+    home_implied_norm = home_implied / total_implied
+    away_implied_norm = away_implied / total_implied
+    draw_implied_norm = draw_implied / total_implied
+
+    # Calculate edges
+    home_edge = home_prob - home_implied_norm
+    away_edge = away_prob - away_implied_norm
+    draw_edge = draw_prob - draw_implied_norm
+
+    col1, col2, col3 = st.columns(3)
+
+    with col1:
+        st.metric(
+            "Home Edge",
+            f"{home_edge:+.1%}",
+            f"Fair Odds: {1 / home_prob:.2f}",
+            delta_color="normal" if home_edge > 0 else "inverse"
+        )
+
+    with col2:
+        st.metric(
+            "Draw Edge",
+            f"{draw_edge:+.1%}",
+            f"Fair Odds: {1 / draw_prob:.2f}",
+            delta_color="normal" if draw_edge > 0 else "inverse"
+        )
+
+    with col3:
+        st.metric(
+            "Away Edge",
+            f"{away_edge:+.1%}",
+            f"Fair Odds: {1 / away_prob:.2f}",
+            delta_color="normal" if away_edge > 0 else "inverse"
+        )
+
+    # Add betting recommendations based on edge
+    threshold = 0.05  # 5% edge threshold
+    recommendations = []
+
+    if home_edge > threshold:
+        recommendations.append(f"✅ Home win shows value at odds of {home_odds:.2f}")
+    if draw_edge > threshold:
+        recommendations.append(f"✅ Draw shows value at odds of {draw_odds:.2f}")
+    if away_edge > threshold:
+        recommendations.append(f"✅ Away win shows value at odds of {away_odds:.2f}")
+
+    if recommendations:
+        st.markdown("### Recommended Bets")
+        for rec in recommendations:
+            st.markdown(rec)
+    else:
+        st.warning("⚠️ No significant betting value found at current odds")
 
 def main():
     # Animated title
@@ -1055,10 +1329,12 @@ def main():
                 )
 
                 # Get model prediction
-                probabilities = model.predict_proba(features)[0]
-                away_prob = probabilities[0]
-                draw_prob = probabilities[1]
-                home_prob = probabilities[2]
+                win_probability = model.predict_proba(features)[0]
+
+                # Calculate probabilities
+                home_prob = win_probability[1]
+                away_prob = win_probability[0] * 0.8  # Adjust for draw
+                draw_prob = win_probability[0] * 0.2  # Allocate portion to draw
 
                 # Normalize probabilities
                 total_prob = home_prob + away_prob + draw_prob
@@ -1107,16 +1383,20 @@ def main():
                     col5, col6 = st.columns(2)
                     with col5:
                         add_animated_stats_box(f"{home_team} Form", {
-                            "Recent Goals": f"{safe_get(home_stats, 'recent_goals_for'):.2f}",
-                            "Goals Against": f"{safe_get(home_stats, 'recent_goals_against'):.2f}",
-                            "xG Rating": f"{safe_get(home_stats, 'recent_xgoals_pct'):.1f}%"
+                            "Recent Goals": f"{safe_get(home_stats, 'goalsFor'):.2f}",
+                            "Goals Against": f"{safe_get(home_stats, 'goalsAgainst'):.2f}",
+                            "xG Percentage": f"{safe_get(home_stats, 'xGoalsPercentage'):.1f}%",
+                            "Corsi": f"{safe_get(home_stats, 'corsiPercentage'):.1f}%",
+                            "Fenwick": f"{safe_get(home_stats, 'fenwickPercentage'):.1f}%"
                         })
 
                     with col6:
                         add_animated_stats_box(f"{away_team} Form", {
-                            "Recent Goals": f"{safe_get(away_stats, 'recent_goals_for'):.2f}",
-                            "Goals Against": f"{safe_get(away_stats, 'recent_goals_against'):.2f}",
-                            "xG Rating": f"{safe_get(away_stats, 'recent_xgoals_pct'):.1f}%"
+                            "Recent Goals": f"{safe_get(away_stats, 'goalsFor'):.2f}",
+                            "Goals Against": f"{safe_get(away_stats, 'goalsAgainst'):.2f}",
+                            "xG Percentage": f"{safe_get(away_stats, 'xGoalsPercentage'):.1f}%",
+                            "Corsi": f"{safe_get(away_stats, 'corsiPercentage'):.1f}%",
+                            "Fenwick": f"{safe_get(away_stats, 'fenwickPercentage'):.1f}%"
                         })
 
                 with tab2:
@@ -1126,18 +1406,18 @@ def main():
                     col7, col8 = st.columns(2)
                     with col7:
                         add_animated_stats_box(f"{home_team} Detailed Stats", {
-                            "Goals/Game": f"{safe_get(home_stats, 'recent_goals_for'):.2f}",
-                            "Shots/Game": f"{safe_get(home_stats, 'recent_shots_for'):.1f}",
-                            "Save %": f"{safe_get(home_stats, 'recent_save_percentage'):.1f}%",
-                            "PP%": f"{safe_get(home_stats, 'recent_powerplay_percentage'):.1f}%"
+                            "Goals/Game": f"{safe_get(home_stats, 'goalsFor'):.2f}",
+                            "Shots/Game": f"{safe_get(home_stats, 'shotsOnGoalFor'):.1f}",
+                            "Save %": f"{safe_get(home_stats, 'goalie_save_percentage', 0.9) * 100:.1f}%",
+                            "High Danger Shots": f"{safe_get(home_stats, 'highDangerShotsFor'):.1f}"
                         })
 
                     with col8:
                         add_animated_stats_box(f"{away_team} Detailed Stats", {
-                            "Goals/Game": f"{safe_get(away_stats, 'recent_goals_for'):.2f}",
-                            "Shots/Game": f"{safe_get(away_stats, 'recent_shots_for'):.1f}",
-                            "Save %": f"{safe_get(away_stats, 'recent_save_percentage'):.1f}%",
-                            "PP%": f"{safe_get(away_stats, 'recent_powerplay_percentage'):.1f}%"
+                            "Goals/Game": f"{safe_get(away_stats, 'goalsFor'):.2f}",
+                            "Shots/Game": f"{safe_get(away_stats, 'shotsOnGoalFor'):.1f}",
+                            "Save %": f"{safe_get(away_stats, 'goalie_save_percentage', 0.9) * 100:.1f}%",
+                            "High Danger Shots": f"{safe_get(away_stats, 'highDangerShotsFor'):.1f}"
                         })
 
                 with tab3:
@@ -1169,7 +1449,7 @@ def main():
                         risk_factors.append("Very close match prediction")
                     if h2h_stats['games_played'] < 3:
                         risk_factors.append("Limited head-to-head history")
-                    if abs(safe_get(home_stats, 'recent_goals_for') - safe_get(away_stats, 'recent_goals_for')) < 0.3:
+                    if abs(safe_get(home_stats, 'goalsFor') - safe_get(away_stats, 'goalsFor')) < 0.3:
                         risk_factors.append("Teams showing similar recent form")
 
                     if risk_factors:
