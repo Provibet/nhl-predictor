@@ -274,34 +274,47 @@ def prepare_features(home_team, away_team, home_odds, away_odds, draw_odds):
         draw_implied_prob = 1 / float(draw_odds) if float(draw_odds) != 0 else 0.33
         market_efficiency = home_implied_prob + away_implied_prob + draw_implied_prob
 
-        # Create features dictionary matching the elite model's feature set
-        features = pd.DataFrame([{  # Change this line to create DataFrame directly
-            'home_recent_wins': safe_get(home_form, 'recent_win_rate', 0.5),
-            'home_recent_goals_avg': safe_get(home_stats, 'goalsFor', 2.5),
-            'home_recent_goals_allowed': safe_get(home_stats, 'goalsAgainst', 2.5),
-            'away_recent_wins': safe_get(away_form, 'recent_win_rate', 0.5),
-            'away_recent_goals_avg': safe_get(away_stats, 'goalsFor', 2.5),
-            'away_recent_goals_allowed': safe_get(away_stats, 'goalsAgainst', 2.5),
+        # Create relative ratios for features
+        features = pd.DataFrame([{
+            # H2H features remain unchanged
             'h2h_home_win_pct': safe_get(h2h_stats, 'home_team_wins', 0) / max(h2h_stats['games_played'], 1),
             'h2h_games_played': safe_get(h2h_stats, 'games_played', 0),
             'h2h_avg_total_goals': safe_get(h2h_stats, 'avg_total_goals', 5.0),
-            'home_goalie_save_pct': safe_get(home_stats, 'goalie_save_percentage', 0.9),
-            'home_goalie_games': safe_get(home_stats, 'goalie_games', 1),
-            'away_goalie_save_pct': safe_get(away_stats, 'goalie_save_percentage', 0.9),
-            'away_goalie_games': safe_get(away_stats, 'goalie_games', 1),
-            'home_team_goals_per_game': safe_get(home_stats, 'goalsFor', 2.5),
-            'home_team_top_scorer_goals': safe_get(home_stats, 'top_scorer_goals', 0),
-            'away_team_goals_per_game': safe_get(away_stats, 'goalsFor', 2.5),
-            'away_team_top_scorer_goals': safe_get(away_stats, 'top_scorer_goals', 0),
-            'home_xGoalsPercentage': safe_get(home_stats, 'xGoalsPercentage', 50.0),
-            'home_corsiPercentage': safe_get(home_stats, 'corsiPercentage', 50.0),
-            'home_fenwickPercentage': safe_get(home_stats, 'fenwickPercentage', 50.0),
-            'away_xGoalsPercentage': safe_get(away_stats, 'xGoalsPercentage', 50.0),
-            'away_corsiPercentage': safe_get(away_stats, 'corsiPercentage', 50.0),
-            'away_fenwickPercentage': safe_get(away_stats, 'fenwickPercentage', 50.0),
-            'home_implied_prob_normalized': home_implied_prob / market_efficiency,
-            'away_implied_prob_normalized': away_implied_prob / market_efficiency,
-            'draw_implied_prob_normalized': draw_implied_prob / market_efficiency
+            'draw_implied_prob_normalized': draw_implied_prob / market_efficiency,
+
+            # Create relative ratios for all paired metrics
+            'relative_recent_wins_ratio': safe_get(home_form, 'recent_win_rate', 0.5) /
+                                          max(safe_get(away_form, 'recent_win_rate', 0.5), 0.001),
+
+            'relative_recent_goals_avg_ratio': safe_get(home_stats, 'goalsFor', 2.5) /
+                                               max(safe_get(away_stats, 'goalsFor', 2.5), 0.001),
+
+            'relative_recent_goals_allowed_ratio': safe_get(home_stats, 'goalsAgainst', 2.5) /
+                                                   max(safe_get(away_stats, 'goalsAgainst', 2.5), 0.001),
+
+            'relative_goalie_save_pct_ratio': safe_get(home_stats, 'goalie_save_percentage', 0.9) /
+                                              max(safe_get(away_stats, 'goalie_save_percentage', 0.9), 0.001),
+
+            'relative_goalie_games_ratio': safe_get(home_stats, 'goalie_games', 1) /
+                                           max(safe_get(away_stats, 'goalie_games', 1), 0.001),
+
+            'relative_team_goals_per_game_ratio': safe_get(home_stats, 'goalsFor', 2.5) /
+                                                  max(safe_get(away_stats, 'goalsFor', 2.5), 0.001),
+
+            'relative_team_top_scorer_goals_ratio': safe_get(home_stats, 'top_scorer_goals', 0) /
+                                                    max(safe_get(away_stats, 'top_scorer_goals', 0), 0.001),
+
+            'relative_implied_prob_normalized_ratio': (home_implied_prob / market_efficiency) /
+                                                      max((away_implied_prob / market_efficiency), 0.001),
+
+            'relative_xGoalsPercentage_ratio': safe_get(home_stats, 'xGoalsPercentage', 50.0) /
+                                               max(safe_get(away_stats, 'xGoalsPercentage', 50.0), 0.001),
+
+            'relative_corsiPercentage_ratio': safe_get(home_stats, 'corsiPercentage', 50.0) /
+                                              max(safe_get(away_stats, 'corsiPercentage', 50.0), 0.001),
+
+            'relative_fenwickPercentage_ratio': safe_get(home_stats, 'fenwickPercentage', 50.0) /
+                                                max(safe_get(away_stats, 'fenwickPercentage', 50.0), 0.001)
         }])
 
         return features, home_stats, away_stats, h2h_stats
