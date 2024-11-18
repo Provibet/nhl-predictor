@@ -75,15 +75,15 @@ def get_team_stats(team):
     WITH recent_games AS (
         SELECT 
             team,
-            "goalsFor",
-            "goalsAgainst",
-            "xGoalsPercentage",
-            "corsiPercentage",
-            "fenwickPercentage",
-            "highDangerGoalsFor",
-            "highDangerGoalsAgainst",
-            "mediumDangerGoalsFor",
-            "mediumDangerGoalsAgainst"
+            COALESCE("goalsFor", 0) as "goalsFor",
+            COALESCE("goalsAgainst", 0) as "goalsAgainst",
+            COALESCE("xGoalsPercentage", 50) as "xGoalsPercentage",
+            COALESCE("corsiPercentage", 50) as "corsiPercentage",
+            COALESCE("fenwickPercentage", 50) as "fenwickPercentage",
+            COALESCE("highDangerGoalsFor", 0) as "highDangerGoalsFor",
+            COALESCE("highDangerGoalsAgainst", 0) as "highDangerGoalsAgainst",
+            COALESCE("mediumDangerGoalsFor", 0) as "mediumDangerGoalsFor",
+            COALESCE("mediumDangerGoalsAgainst", 0) as "mediumDangerGoalsAgainst"
         FROM nhl24_matchups_with_situations
         WHERE team = %(team)s
         ORDER BY games_played DESC
@@ -92,8 +92,8 @@ def get_team_stats(team):
     goalie_stats AS (
         SELECT 
             team,
-            MAX(save_percentage) as goalie_save_percentage,
-            MAX(games_played) as goalie_games
+            COALESCE(MAX(save_percentage), 0.9) as goalie_save_percentage,
+            COALESCE(MAX(games_played), 1) as goalie_games
         FROM nhl24_goalie_stats
         WHERE team = %(team)s
         GROUP BY team
@@ -101,30 +101,43 @@ def get_team_stats(team):
     skater_stats AS (
         SELECT 
             team,
-            MAX(goals) as top_scorer_goals
+            COALESCE(MAX(goals), 0) as top_scorer_goals
         FROM nhl24_skater_stats
         WHERE team = %(team)s AND position != 'G'
         GROUP BY team
     )
     SELECT 
-        AVG(rg."goalsFor") as "goalsFor",
-        AVG(rg."goalsAgainst") as "goalsAgainst",
-        AVG(rg."xGoalsPercentage") as "xGoalsPercentage",
-        AVG(rg."corsiPercentage") as "corsiPercentage",
-        AVG(rg."fenwickPercentage") as "fenwickPercentage",
-        gs.goalie_save_percentage,
-        gs.goalie_games,
-        ss.top_scorer_goals,
-        COUNT(CASE WHEN rg."goalsFor" > rg."goalsAgainst" THEN 1 END)::float / 
-            NULLIF(COUNT(*), 0) as recent_win_rate
+        COALESCE(AVG(rg."goalsFor"), 2.5) as "goalsFor",
+        COALESCE(AVG(rg."goalsAgainst"), 2.5) as "goalsAgainst",
+        COALESCE(AVG(rg."xGoalsPercentage"), 50) as "xGoalsPercentage",
+        COALESCE(AVG(rg."corsiPercentage"), 50) as "corsiPercentage",
+        COALESCE(AVG(rg."fenwickPercentage"), 50) as "fenwickPercentage",
+        COALESCE(gs.goalie_save_percentage, 0.9) as goalie_save_percentage,
+        COALESCE(gs.goalie_games, 1) as goalie_games,
+        COALESCE(ss.top_scorer_goals, 0) as top_scorer_goals,
+        COALESCE(COUNT(CASE WHEN rg."goalsFor" > rg."goalsAgainst" THEN 1 END)::float / 
+            NULLIF(COUNT(*), 0), 0.5) as recent_win_rate
     FROM recent_games rg
     LEFT JOIN goalie_stats gs ON rg.team = gs.team
     LEFT JOIN skater_stats ss ON rg.team = ss.team
     GROUP BY gs.goalie_save_percentage, gs.goalie_games, ss.top_scorer_goals
     """
     engine = init_connection()
-    return pd.read_sql(query, engine, params={'team': team}).iloc[0]
-
+    result = pd.read_sql(query, engine, params={'team': team})
+    if result.empty:
+        # Return default values if no data found
+        return pd.Series({
+            'goalsFor': 2.5,
+            'goalsAgainst': 2.5,
+            'xGoalsPercentage': 50.0,
+            'corsiPercentage': 50.0,
+            'fenwickPercentage': 50.0,
+            'goalie_save_percentage': 0.9,
+            'goalie_games': 1,
+            'top_scorer_goals': 0,
+            'recent_win_rate': 0.5
+        })
+    return result.iloc[0]
 
 def get_head_to_head_stats(home_team, away_team):
     """Get head-to-head statistics"""
@@ -167,10 +180,11 @@ def safe_get(stats, key, default=0.0):
         val = stats.get(key, default)
         if val is None or pd.isna(val):
             return float(default)
-        return float(val)
+        # Convert to float and handle division by zero
+        val = float(val)
+        return val if val != 0 else float(default)
     except (TypeError, ValueError):
         return float(default)
-
 
 def prepare_basic_features(home_team, away_team, home_odds, away_odds, draw_odds):
     """Prepare features that match the model's expectations exactly"""
