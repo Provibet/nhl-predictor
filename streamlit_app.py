@@ -3,6 +3,10 @@ import pandas as pd
 import numpy as np
 from sqlalchemy import create_engine
 import joblib
+from google.oauth2 import service_account
+from googleapiclient.discovery import build
+from googleapiclient.http import MediaIoBaseDownload
+import io
 import matplotlib.pyplot as plt
 import seaborn as sns
 from datetime import datetime, timedelta
@@ -13,12 +17,43 @@ st.set_page_config(page_title="NHL Game Predictor", page_icon="🏒", layout="wi
 
 # Model loading with caching
 @st.cache_resource
-def load_model():
+def load_model_from_drive():
     try:
-        model = joblib.load('nhl_game_predictor_ensemble_v4.1_balanced.pkl')
-        return model
+        # Use the same credentials setup from original code
+        credentials = service_account.Credentials.from_service_account_info(
+            st.secrets["gcp_service_account"],
+            scopes=['https://www.googleapis.com/auth/drive.readonly']
+        )
+
+        service = build('drive', 'v3', credentials=credentials)
+
+        # Use the same folder ID and model name from original code
+        file_id = st.secrets["drive_folder_id"]
+        model_name = "nhl_game_predictor_ensemble_v4.1_balanced.pkl"
+
+        # Query to find the model file in the specified folder
+        query = f"name='{model_name}' and '{file_id}' in parents"
+        results = service.files().list(q=query, fields="files(id, name)").execute()
+        files = results.get('files', [])
+
+        if not files:
+            st.error("Model file not found in Drive")
+            return None
+
+        # Download the model file
+        request = service.files().get_media(fileId=files[0]['id'])
+        file_handle = io.BytesIO()
+        downloader = MediaIoBaseDownload(file_handle, request)
+
+        done = False
+        while not done:
+            _, done = downloader.next_chunk()
+
+        file_handle.seek(0)
+        return joblib.load(file_handle)
+
     except Exception as e:
-        st.error(f"Error loading model: {str(e)}")
+        st.error(f"Error loading model from Google Drive: {str(e)}")
         return None
 
 
