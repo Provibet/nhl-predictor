@@ -281,28 +281,26 @@ def safe_get(stats, key, default=0.0):
 
 def prepare_features(home_team, away_team, home_odds, away_odds, draw_odds):
     try:
-        # Add debug here, right at the start of try block
-        with st.expander("Feature Generation Debug"):
-            # Get all required stats
-            st.write("📊 Fetching Stats...")
-            home_stats = get_team_stats(home_team)
-            away_stats = get_team_stats(away_team)
-
-            # Display raw stats
-            col1, col2 = st.columns(2)
-            with col1:
-                st.write(f"{home_team} Raw Stats:")
-                st.json(dict(home_stats))
-            with col2:
-                st.write(f"{away_team} Raw Stats:")
-                st.json(dict(away_stats))
-
         # Get all required stats
         home_stats = get_team_stats(home_team)
         away_stats = get_team_stats(away_team)
         h2h_stats = get_head_to_head_stats(home_team, away_team)
         home_form = get_recent_form(home_team)
         away_form = get_recent_form(away_team)
+
+        # Single debug expander with all information
+        with st.expander("Debug Information"):
+            st.subheader("📊 Raw Stats")
+            col1, col2 = st.columns(2)
+            with col1:
+                st.write(f"{home_team} Stats:")
+                st.json(dict(home_stats))
+            with col2:
+                st.write(f"{away_team} Stats:")
+                st.json(dict(away_stats))
+
+            st.subheader("Head to Head Stats")
+            st.json(dict(h2h_stats))
 
         # Calculate market probabilities
         home_implied_prob = 1 / float(home_odds) if float(home_odds) != 0 else 0.33
@@ -353,9 +351,9 @@ def prepare_features(home_team, away_team, home_odds, away_odds, draw_odds):
                                                 max(safe_get(away_stats, 'fenwickPercentage', 50.0), 0.001)
         }])
 
-        # Add debug for final features
-        with st.expander("Final Features Debug"):
-            st.write("🔄 Generated Features:")
+        # Add debug information for final features in the same expander
+        with st.expander("Generated Features"):
+            st.write("🔄 Model Input Features:")
             st.dataframe(features)
 
             # Check for zeros
