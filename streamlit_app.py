@@ -307,86 +307,117 @@ def prepare_basic_features(home_team, away_team, home_odds, away_odds, draw_odds
         st.write(f"Odds: {home_odds}/{away_odds}/{draw_odds}")
         return None
 
+
 def display_prediction_results(probs, home_team, away_team, home_odds, away_odds, draw_odds):
-    """Display prediction results with formatting"""
+    """Display prediction results focusing on model confidence"""
     st.header("Prediction Results")
 
+    # Find highest probability outcome
+    outcomes = ["Away Win", "Draw", "Home Win"]
+    teams = [away_team, "Draw", home_team]
+    best_pred_idx = np.argmax(probs)
+    confidence = probs[best_pred_idx]
+
+    # Create columns for display
     col1, col2, col3 = st.columns(3)
 
-    # Calculate implied probabilities
-    implied_home = 1 / home_odds
-    implied_away = 1 / away_odds
-    implied_draw = 1 / draw_odds
-    total_implied = implied_home + implied_away + implied_draw
-
-    # Normalize implied probabilities
-    implied_home_norm = implied_home / total_implied
-    implied_away_norm = implied_away / total_implied
-    implied_draw_norm = implied_draw / total_implied
-
-    # Calculate edges
-    home_edge = probs[2] - implied_home_norm
-    away_edge = probs[0] - implied_away_norm
-    draw_edge = probs[1] - implied_draw_norm
-
+    # Display probabilities with confidence indicators
     with col1:
         st.metric(
-            f"{home_team} (Home)",
-            f"{probs[2]:.1%}",
-            f"Edge: {home_edge:+.1%}",
-            delta_color="normal" if home_edge > 0 else "inverse"
+            f"{away_team} (Away)",
+            f"{probs[0]:.1%}",
+            f"Confidence: {'High' if probs[0] > 0.5 else 'Medium' if probs[0] > 0.33 else 'Low'}",
+            delta_color="normal" if probs[0] == max(probs) else "off"
         )
 
     with col2:
         st.metric(
             "Draw",
             f"{probs[1]:.1%}",
-            f"Edge: {draw_edge:+.1%}",
-            delta_color="normal" if draw_edge > 0 else "inverse"
+            f"Confidence: {'High' if probs[1] > 0.5 else 'Medium' if probs[1] > 0.33 else 'Low'}",
+            delta_color="normal" if probs[1] == max(probs) else "off"
         )
 
     with col3:
         st.metric(
-            f"{away_team} (Away)",
-            f"{probs[0]:.1%}",
-            f"Edge: {away_edge:+.1%}",
-            delta_color="normal" if away_edge > 0 else "inverse"
+            f"{home_team} (Home)",
+            f"{probs[2]:.1%}",
+            f"Confidence: {'High' if probs[2] > 0.5 else 'Medium' if probs[2] > 0.33 else 'Low'}",
+            delta_color="normal" if probs[2] == max(probs) else "off"
         )
 
-    # Display best value bet
-    st.subheader("Betting Value Analysis")
-    edges = [away_edge, draw_edge, home_edge]
-    outcomes = ["Away Win", "Draw", "Home Win"]
-    odds = [away_odds, draw_odds, home_odds]
-
-    best_edge_idx = np.argmax(edges)
-    if edges[best_edge_idx] > 0.05:  # 5% edge threshold
-        st.success(f"Best Value Bet: {outcomes[best_edge_idx]} @ {odds[best_edge_idx]:.2f} "
-                   f"(Edge: {edges[best_edge_idx]:+.1%})")
+    # Display model's prediction with confidence
+    st.subheader("Model Prediction")
+    if confidence > 0.5:
+        st.success(f"Strong Prediction: {teams[best_pred_idx]} ({confidence:.1%} confident)")
+    elif confidence > 0.4:
+        st.info(f"Moderate Prediction: {teams[best_pred_idx]} ({confidence:.1%} confident)")
     else:
-        st.warning("No significant betting value found")
+        st.warning(f"Low Confidence Prediction: {teams[best_pred_idx]} ({confidence:.1%} confident)")
+
+    # Additional confidence analysis
+    st.subheader("Prediction Confidence Analysis")
+    confidence_explanation = {
+        (0.6, 1.0): "Very High Confidence - Model strongly favors this outcome",
+        (0.5, 0.6): "High Confidence - Model shows clear preference",
+        (0.4, 0.5): "Moderate Confidence - Model shows slight preference",
+        (0.33, 0.4): "Low Confidence - Prediction uncertainty is high",
+        (0, 0.33): "Very Low Confidence - Too close to call"
+    }
+
+    for (lower, upper), explanation in confidence_explanation.items():
+        if confidence >= lower and confidence < upper:
+            st.write(explanation)
+            break
 
     # Create visualization
-    fig, ax = plt.subplots(figsize=(10, 5))
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(15, 5))
 
+    # Probability distribution
     labels = [f'{away_team}\n{probs[0]:.1%}', f'Draw\n{probs[1]:.1%}', f'{home_team}\n{probs[2]:.1%}']
-    model_probs = [probs[0], probs[1], probs[2]]
-    market_probs = [implied_away_norm, implied_draw_norm, implied_home_norm]
+    colors = ['lightblue' if i == best_pred_idx else 'lightgray' for i in range(3)]
 
-    x = np.arange(len(labels))
-    width = 0.35
+    ax1.bar(range(3), probs, color=colors)
+    ax1.set_ylabel('Probability')
+    ax1.set_title('Model Prediction Probabilities')
+    ax1.set_xticks(range(3))
+    ax1.set_xticklabels(labels)
 
-    ax.bar(x - width / 2, model_probs, width, label='Model Probability', color='lightblue')
-    ax.bar(x + width / 2, market_probs, width, label='Market Implied', color='lightgray')
-
-    ax.set_ylabel('Probability')
-    ax.set_title('Model vs Market Probabilities')
-    ax.set_xticks(x)
-    ax.set_xticklabels(labels)
-    ax.legend()
+    # Confidence gauge
+    gauge_colors = [(1, 0.7, 0.7), (1, 0.9, 0.7), (0.7, 1, 0.7)]  # Red to Yellow to Green
+    confidence_level = confidence
+    ax2.pie([confidence_level, 1 - confidence_level], colors=[gauge_colors[int(confidence_level * 2)], 'lightgray'],
+            labels=[f'Confidence\n{confidence_level:.1%}', ''], startangle=90)
+    ax2.set_title('Prediction Confidence Level')
 
     plt.tight_layout()
     st.pyplot(fig)
+
+    # Detailed stats comparison
+    st.subheader("Prediction Factors")
+    factors_df = pd.DataFrame({
+        'Factor': ['Model Confidence', 'Probability Margin', 'Prediction Strength'],
+        'Value': [
+            f"{confidence:.1%}",
+            f"{(max(probs) - sorted(probs)[-2]):.1%}",
+            "Strong" if confidence > 0.5 else "Moderate" if confidence > 0.4 else "Weak"
+        ],
+        'Interpretation': [
+            "How confident the model is in its prediction",
+            "Difference between best and second-best prediction",
+            "Overall strength of the prediction signal"
+        ]
+    })
+    st.table(factors_df)
+
+    # Warning for low confidence predictions
+    if confidence < 0.4:
+        st.warning("""
+        ⚠️ Low Confidence Prediction Warning:
+        - The model shows significant uncertainty in this prediction
+        - Consider waiting for more data or skipping this game
+        - Multiple outcomes have similar probabilities
+        """)
 
 def main():
     st.title("NHL Game Predictor 🏒")
