@@ -23,6 +23,8 @@ from selenium import webdriver
 from selenium.webdriver.edge.service import Service
 from selenium.webdriver.edge.options import Options
 from selenium.webdriver.common.by import By
+from selenium.webdriver.edge.service import Service as EdgeService
+from webdriver_manager.microsoft import EdgeChromiumDriverManager
 
 # Page configuration
 def setup_page():
@@ -106,14 +108,14 @@ def scrape_nhl_odds():
     try:
         print("Setting up Edge options...")
         edge_options = Options()
-        edge_options.add_argument('--headless')  # Run headless for production
+        edge_options.add_argument('--headless')
         edge_options.add_argument('--start-maximized')
         edge_options.add_argument('--no-sandbox')
         edge_options.add_argument('--disable-dev-shm-usage')
         edge_options.add_experimental_option('excludeSwitches', ['enable-logging'])
 
         print("Setting up Edge service...")
-        service = Service(r"C:\Users\xynoo\OneDrive\Desktop\msedgedriver.exe")
+        service = EdgeService(EdgeChromiumDriverManager().install())
 
         print("Initializing Edge driver...")
         driver = webdriver.Edge(service=service, options=edge_options)
