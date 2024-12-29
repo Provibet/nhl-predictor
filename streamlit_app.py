@@ -1,6 +1,23 @@
+# Standard library imports
+import io
+import re
+from datetime import datetime
+import pytz
+
+# Third-party imports
 import streamlit as st
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+from sqlalchemy import create_engine
+import joblib
+import requests
+from bs4 import BeautifulSoup
 
-
+# Google API imports
+from google.oauth2 import service_account
+from googleapiclient.discovery import build
+from googleapiclient.http import MediaIoBaseDownload
 # Page configuration
 def setup_page():
     st.set_page_config(page_title="NHL Game Predictor", page_icon="🏒", layout="wide")
@@ -59,12 +76,6 @@ TEAM_MAPPINGS = {
     'CBJ': 'Columbus Blue Jackets',
     'Utah HC': 'Utah Hockey Club'
 }
-
-import requests
-from bs4 import BeautifulSoup
-import streamlit as st
-import re
-from config import TEAM_MAPPINGS
 
 
 def clean_team_name(team_name):
@@ -139,13 +150,6 @@ def scrape_nhl_odds():
         st.error(f"Error scraping odds: {str(e)}")
         return []
 
-from google.oauth2 import service_account
-from googleapiclient.discovery import build
-from googleapiclient.http import MediaIoBaseDownload
-import streamlit as st
-import io
-import joblib
-
 @st.cache_resource
 def load_model_from_drive():
     """Load the prediction model from Google Drive"""
@@ -181,12 +185,6 @@ def load_model_from_drive():
     except Exception as e:
         st.error(f"Error loading model from Google Drive: {str(e)}")
         return None
-
-
-import streamlit as st
-import pandas as pd
-from sqlalchemy import create_engine
-
 
 @st.cache_resource
 def init_connection():
@@ -314,16 +312,198 @@ def get_head_to_head_stats(home_team, away_team):
     })
 
 
-import streamlit as st
-import pandas as pd
-import numpy as np
-import matplotlib.pyplot as plt
-from config import setup_page
-from scraper import scrape_nhl_odds
-from model_utils import load_model_from_drive
-from database import get_teams, get_team_stats, get_head_to_head_stats
-from feature_engineering import prepare_basic_features, display_prediction_results
+def safe_get(stats, key, default=0.0):
+    """Safely get a value from stats with robust type checking and conversion"""
+    try:
+        val = stats.get(key)
+        if val is None or pd.isna(val):
+            return float(default)
 
+        try:
+            val = float(val)
+            if np.isinf(val) or np.isnan(val):
+                return float(default)
+            return val
+        except (ValueError, TypeError):
+            return float(default)
+
+    except Exception:
+        return float(default)
+
+
+def prepare_basic_features(home_team, away_team, home_odds, away_odds, draw_odds):
+    """Prepare features with robust error handling"""
+    try:
+        st.write("Fetching team stats...")
+        home_stats = get_team_stats(home_team)
+        away_stats = get_team_stats(away_team)
+        h2h_stats = get_head_to_head_stats(home_team, away_team)
+
+        with st.expander("Raw Data"):
+            st.write("Home Stats:", dict(home_stats))
+            st.write("Away Stats:", dict(away_stats))
+            st.write("H2H Stats:", dict(h2h_stats))
+
+        # Constants for safety
+        EPSILON = 0.0001
+        DEFAULT_PERCENTAGE = 50.0
+
+        # Safely prepare features with explicit defaults
+        features = {
+            # H2H features
+            'h2h_home_win_pct': safe_get(h2h_stats, 'home_team_wins', 0) /
+                                max(safe_get(h2h_stats, 'games_played', 1), 1),
+            'h2h_games_played': safe_get(h2h_stats, 'games_played', 0),
+            'h2h_avg_total_goals': safe_get(h2h_stats, 'avg_total_goals', 5.0),
+
+            # Implied probabilities
+            'draw_implied_prob_normalized': ((1 / float(draw_odds)) /
+                                             ((1 / float(home_odds)) +
+                                              (1 / float(away_odds)) +
+                                              (1 / float(draw_odds)))),
+
+            # Recent form ratios
+            'relative_recent_wins_ratio': safe_get(home_stats, 'recent_win_rate', 0.5) /
+                                          max(safe_get(away_stats, 'recent_win_rate', 0.5), EPSILON),
+
+            'relative_recent_goals_avg_ratio': safe_get(home_stats, 'goalsFor', 2.5) /
+                                               max(safe_get(away_stats, 'goalsFor', 2.5), EPSILON),
+
+            'relative_recent_goals_allowed_ratio': safe_get(home_stats, 'goalsAgainst', 2.5) /
+                                                   max(safe_get(away_stats, 'goalsAgainst', 2.5), EPSILON),
+
+            # Goalie stats ratios
+            'relative_goalie_save_pct_ratio': safe_get(home_stats, 'goalie_save_percentage', 0.9) /
+                                              max(safe_get(away_stats, 'goalie_save_percentage', 0.9), EPSILON),
+
+            'relative_goalie_games_ratio': safe_get(home_stats, 'goalie_games', 1) /
+                                           max(safe_get(away_stats, 'goalie_games', 1), EPSILON),
+
+            # Team scoring ratios
+            'relative_team_goals_per_game_ratio': safe_get(home_stats, 'goalsFor', 2.5) /
+                                                  max(safe_get(away_stats, 'goalsFor', 2.5), EPSILON),
+
+            'relative_team_top_scorer_goals_ratio': (safe_get(home_stats, 'top_scorer_goals', 1) + EPSILON) /
+                                                    max(safe_get(away_stats, 'top_scorer_goals', 1) + EPSILON, EPSILON),
+
+            # Market probabilities ratio
+            'relative_implied_prob_normalized_ratio': ((1 / float(home_odds)) /
+                                                       ((1 / float(home_odds)) + (1 / float(away_odds)) + (
+                                                                   1 / float(draw_odds)))) /
+                                                      max((1 / float(away_odds)) /
+                                                          ((1 / float(home_odds)) + (1 / float(away_odds)) + (
+                                                                      1 / float(draw_odds))),
+                                                          EPSILON),
+
+            # Advanced stats ratios
+            'relative_xGoalsPercentage_ratio': safe_get(home_stats, 'xGoalsPercentage', DEFAULT_PERCENTAGE) /
+                                               max(safe_get(away_stats, 'xGoalsPercentage', DEFAULT_PERCENTAGE),
+                                                   EPSILON),
+
+            'relative_corsiPercentage_ratio': safe_get(home_stats, 'corsiPercentage', DEFAULT_PERCENTAGE) /
+                                              max(safe_get(away_stats, 'corsiPercentage', DEFAULT_PERCENTAGE), EPSILON),
+
+            'relative_fenwickPercentage_ratio': safe_get(home_stats, 'fenwickPercentage', DEFAULT_PERCENTAGE) /
+                                                max(safe_get(away_stats, 'fenwickPercentage', DEFAULT_PERCENTAGE),
+                                                    EPSILON)
+        }
+
+        # Validate features before returning
+        for key, value in features.items():
+            if value is None or np.isinf(value) or np.isnan(value):
+                st.error(f"Invalid value detected for {key}: {value}")
+                features[key] = 1.0  # Safe default
+
+        # Create DataFrame and validate
+        features_df = pd.DataFrame([features])
+
+        # Debug final features
+        with st.expander("Final Features Check"):
+            st.write("Feature names:", features_df.columns.tolist())
+            st.write("Feature values:", features_df.iloc[0].to_dict())
+            st.write("Any null values:", features_df.isnull().sum().to_dict())
+            st.write("Any infinite values:", np.isinf(features_df).sum().to_dict())
+
+        return features_df
+
+    except Exception as e:
+        st.error(f"Error in feature preparation: {str(e)}")
+        st.write("Debug information:")
+        st.write(f"Home team: {home_team}")
+        st.write(f"Away team: {away_team}")
+        st.write(f"Odds: {home_odds}/{away_odds}/{draw_odds}")
+        return None
+
+
+def display_prediction_results(probs, home_team, away_team, home_odds, away_odds, draw_odds):
+    """Display prediction results focusing on model confidence"""
+    st.header("Prediction Results")
+
+    # Find highest probability outcome
+    outcomes = ["Away Win", "Draw", "Home Win"]
+    teams = [away_team, "Draw", home_team]
+    best_pred_idx = np.argmax(probs)
+    confidence = probs[best_pred_idx]
+
+    # Create columns for display
+    col1, col2, col3 = st.columns(3)
+
+    # Display probabilities with confidence indicators
+    with col1:
+        st.metric(
+            f"{away_team} (Away)",
+            f"{probs[0]:.1%}",
+            f"Confidence: {'High' if probs[0] > 0.5 else 'Medium' if probs[0] > 0.33 else 'Low'}",
+            delta_color="normal" if probs[0] == max(probs) else "off"
+        )
+
+    with col2:
+        st.metric(
+            "Draw",
+            f"{probs[1]:.1%}",
+            f"Confidence: {'High' if probs[1] > 0.5 else 'Medium' if probs[1] > 0.33 else 'Low'}",
+            delta_color="normal" if probs[1] == max(probs) else "off"
+        )
+
+    with col3:
+        st.metric(
+            f"{home_team} (Home)",
+            f"{probs[2]:.1%}",
+            f"Confidence: {'High' if probs[2] > 0.5 else 'Medium' if probs[2] > 0.33 else 'Low'}",
+            delta_color="normal" if probs[2] == max(probs) else "off"
+        )
+
+    # Create visualization
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(15, 5))
+
+    # Probability distribution
+    labels = [f'{away_team}\n{probs[0]:.1%}', f'Draw\n{probs[1]:.1%}', f'{home_team}\n{probs[2]:.1%}']
+    colors = ['lightblue' if i == best_pred_idx else 'lightgray' for i in range(3)]
+
+    ax1.bar(range(3), probs, color=colors)
+    ax1.set_ylabel('Probability')
+    ax1.set_title('Model Prediction Probabilities')
+    ax1.set_xticks(range(3))
+    ax1.set_xticklabels(labels)
+
+    # Confidence gauge
+    gauge_colors = [(1, 0.7, 0.7), (1, 0.9, 0.7), (0.7, 1, 0.7)]  # Red to Yellow to Green
+    confidence_level = confidence
+    ax2.pie([confidence_level, 1 - confidence_level], colors=[gauge_colors[int(confidence_level * 2)], 'lightgray'],
+            labels=[f'Confidence\n{confidence_level:.1%}', ''], startangle=90)
+    ax2.set_title('Prediction Confidence Level')
+
+    plt.tight_layout()
+    st.pyplot(fig)
+
+    # Warning for low confidence predictions
+    if confidence < 0.4:
+        st.warning("""
+        ⚠️ Low Confidence Prediction Warning:
+        - The model shows significant uncertainty in this prediction
+        - Consider waiting for more data or skipping this game
+        - Multiple outcomes have similar probabilities
+        """)
 
 def main():
     setup_page()
@@ -370,7 +550,25 @@ def main():
         draw_odds = st.number_input("Draw Odds", min_value=1.01, value=3.5, step=0.05)
 
         if st.button("Get Prediction", type="primary"):
-            make_prediction(model, home_team, away_team, home_odds, away_odds, draw_odds)
+            features = prepare_basic_features(
+                home_team,
+                away_team,
+                home_odds,
+                away_odds,
+                draw_odds
+            )
+
+            if features is not None:
+                probabilities = model.predict_proba(features)[0]
+                display_prediction_results(
+                    probabilities,
+                    home_team,
+                    away_team,
+                    home_odds,
+                    away_odds,
+                    draw_odds
+                )
+
     else:
         # Navigation controls
         col1, col2, col3 = st.columns([1, 3, 1])
