@@ -99,36 +99,49 @@ def scrape_nhl_odds():
     try:
         url = "https://checkbestodds.com/hockey-odds/nhl"
         headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
         }
 
         response = requests.get(url, headers=headers, timeout=10)
         response.raise_for_status()
 
         soup = BeautifulSoup(response.text, 'html.parser')
+
+        # Find the table containing the odds
+        table_div = soup.find('div', class_='tablediv')
+        if not table_div:
+            st.warning("Could not find odds table")
+            return []
+
         games = []
+        # Find all rows that contain game information (looking for time values)
+        rows = table_div.find_all('tr', style=lambda x: x and 'height' in x)
 
-        game_rows = soup.find_all('tr', class_=lambda x: x and 'odds-row' in x)
-
-        for row in game_rows:
+        for row in rows:
             try:
-                teams = row.find_all('span', class_='team-name')
-                if len(teams) < 2:
+                # Get all cells in the row
+                cells = row.find_all('td')
+                if len(cells) < 6:  # Need at least time, teams, and odds cells
                     continue
 
-                away_team = clean_team_name(teams[0].text.strip())
-                home_team = clean_team_name(teams[1].text.strip())
+                # Extract time and teams
+                time_cell = cells[0].text.strip()
+                teams_cell = cells[1].text.strip()
 
-                odds_cells = row.find_all('td', class_='odds-cell')
-                if len(odds_cells) < 3:
+                # Split teams (assuming format is "Team1 - Team2")
+                teams = teams_cell.split('-')
+                if len(teams) != 2:
                     continue
 
-                away_odds = extract_decimal_odds(odds_cells[0].text)
-                draw_odds = extract_decimal_odds(odds_cells[1].text)
-                home_odds = extract_decimal_odds(odds_cells[2].text)
+                away_team = clean_team_name(teams[0].strip())
+                home_team = clean_team_name(teams[1].strip())
 
-                time_cell = row.find('td', class_='time-cell')
-                game_time = time_cell.text.strip() if time_cell else "TBD"
+                # Extract odds from the following cells
+                # Assuming format: 1 X 2 (away, draw, home)
+                away_odds = extract_decimal_odds(cells[2].text)
+                draw_odds = extract_decimal_odds(cells[3].text)
+                home_odds = extract_decimal_odds(cells[4].text)
 
                 if away_team and home_team:
                     games.append({
@@ -137,17 +150,22 @@ def scrape_nhl_odds():
                         'away_odds': away_odds,
                         'draw_odds': draw_odds,
                         'home_odds': home_odds,
-                        'game_time': game_time
+                        'game_time': time_cell
                     })
 
             except Exception as e:
                 st.warning(f"Error processing game row: {str(e)}")
                 continue
 
+        if not games:
+            st.warning("No games could be parsed from the page")
+            st.write("Table structure found:", table_div.prettify() if table_div else "No table found")
+
         return games
 
     except Exception as e:
         st.error(f"Error scraping odds: {str(e)}")
+        st.write("Full error:", str(e))
         return []
 
 @st.cache_resource
