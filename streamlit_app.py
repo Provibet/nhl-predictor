@@ -18,6 +18,12 @@ from bs4 import BeautifulSoup
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload
+
+from selenium import webdriver
+from selenium.webdriver.edge.service import Service
+from selenium.webdriver.edge.options import Options
+from selenium.webdriver.common.by import By
+
 # Page configuration
 def setup_page():
     st.set_page_config(page_title="NHL Game Predictor", page_icon="🏒", layout="wide")
@@ -95,78 +101,80 @@ def extract_decimal_odds(odds_text):
 
 @st.cache_data(ttl=300)  # Cache for 5 minutes
 def scrape_nhl_odds():
-    """Scrape NHL odds from checkbestodds.com"""
+    """Scrape NHL odds from checkbestodds.com using Edge Selenium"""
+    driver = None
     try:
-        url = "https://checkbestodds.com/hockey-odds/nhl"
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-        }
+        print("Setting up Edge options...")
+        edge_options = Options()
+        edge_options.add_argument('--headless')  # Run headless for production
+        edge_options.add_argument('--start-maximized')
+        edge_options.add_argument('--no-sandbox')
+        edge_options.add_argument('--disable-dev-shm-usage')
+        edge_options.add_experimental_option('excludeSwitches', ['enable-logging'])
 
-        response = requests.get(url, headers=headers, timeout=10)
-        response.raise_for_status()
+        print("Setting up Edge service...")
+        service = Service(r"C:\Users\xynoo\OneDrive\Desktop\msedgedriver.exe")
 
-        soup = BeautifulSoup(response.text, 'html.parser')
+        print("Initializing Edge driver...")
+        driver = webdriver.Edge(service=service, options=edge_options)
 
-        # Find the table containing the odds
-        table_div = soup.find('div', class_='tablediv')
-        if not table_div:
-            st.warning("Could not find odds table")
-            return []
+        with st.spinner("Fetching latest odds..."):
+            driver.get("https://checkbestodds.com/hockey-odds/nhl")
+            time.sleep(5)  # Wait for page load
 
-        games = []
-        # Find all rows that contain game information (looking for time values)
-        rows = table_div.find_all('tr', style=lambda x: x and 'height' in x)
+            games = []
+            game_links = driver.find_elements(By.CSS_SELECTOR, "td.l2.match a")
 
-        for row in rows:
-            try:
-                # Get all cells in the row
-                cells = row.find_all('td')
-                if len(cells) < 6:  # Need at least time, teams, and odds cells
-                    continue
+            for link in game_links:
+                try:
+                    # Get parent row
+                    row = link.find_element(By.XPATH, "./..").find_element(By.XPATH, "./..")
 
-                # Extract time and teams
-                time_cell = cells[0].text.strip()
-                teams_cell = cells[1].text.strip()
+                    # Get time
+                    time_elem = row.find_element(By.CSS_SELECTOR, "span.time.hM")
+                    game_time = time_elem.text.strip()
 
-                # Split teams (assuming format is "Team1 - Team2")
-                teams = teams_cell.split('-')
-                if len(teams) != 2:
-                    continue
+                    # Get teams
+                    teams_text = link.text.strip()
+                    teams = teams_text.split(" - ")
+                    if len(teams) != 2:
+                        continue
 
-                away_team = clean_team_name(teams[0].strip())
-                home_team = clean_team_name(teams[1].strip())
+                    away_team = clean_team_name(teams[0].strip())
+                    home_team = clean_team_name(teams[1].strip())
 
-                # Extract odds from the following cells
-                # Assuming format: 1 X 2 (away, draw, home)
-                away_odds = extract_decimal_odds(cells[2].text)
-                draw_odds = extract_decimal_odds(cells[3].text)
-                home_odds = extract_decimal_odds(cells[4].text)
+                    # Get odds cells
+                    odds_cells = row.find_elements(By.CSS_SELECTOR, "td.r b")
+                    if len(odds_cells) < 3:
+                        continue
 
-                if away_team and home_team:
+                    # Format odds to always show 2 decimal places
+                    away_odds = f"{float(odds_cells[0].text.strip()):.2f}"
+                    draw_odds = f"{float(odds_cells[1].text.strip()):.2f}"
+                    home_odds = f"{float(odds_cells[2].text.strip()):.2f}"
+
                     games.append({
                         'away_team': away_team,
                         'home_team': home_team,
-                        'away_odds': away_odds,
-                        'draw_odds': draw_odds,
-                        'home_odds': home_odds,
-                        'game_time': time_cell
+                        'away_odds': float(away_odds),
+                        'draw_odds': float(draw_odds),
+                        'home_odds': float(home_odds),
+                        'game_time': game_time
                     })
 
-            except Exception as e:
-                st.warning(f"Error processing game row: {str(e)}")
-                continue
+                except Exception as e:
+                    st.warning(f"Error processing game: {str(e)}")
+                    continue
 
-        if not games:
-            st.warning("No games could be parsed from the page")
-            st.write("Table structure found:", table_div.prettify() if table_div else "No table found")
-
-        return games
+            return games
 
     except Exception as e:
-        st.error(f"Error scraping odds: {str(e)}")
-        st.write("Full error:", str(e))
+        st.error(f"Error during scraping: {str(e)}")
         return []
+
+    finally:
+        if driver:
+            driver.quit()
 
 @st.cache_resource
 def load_model_from_drive():
@@ -550,10 +558,9 @@ def main():
         st.session_state.games = []
 
     # Scrape current odds
-    with st.spinner("Fetching latest odds..."):
-        games = scrape_nhl_odds()
-        if games:
-            st.session_state.games = games
+    games = scrape_nhl_odds()
+    if games:
+        st.session_state.games = games
 
     if not st.session_state.games:
         st.error("Failed to fetch odds. Showing manual input mode.")
@@ -561,11 +568,11 @@ def main():
         col1, col2 = st.columns(2)
         with col1:
             home_team = st.selectbox("Home Team", get_teams())
-            home_odds = st.number_input("Home Odds", min_value=1.01, value=2.0, step=0.05)
+            home_odds = st.number_input("Home Odds", min_value=1.01, value=2.00, step=0.05, format="%.2f")
         with col2:
             away_team = st.selectbox("Away Team", get_teams())
-            away_odds = st.number_input("Away Odds", min_value=1.01, value=2.0, step=0.05)
-        draw_odds = st.number_input("Draw Odds", min_value=1.01, value=3.5, step=0.05)
+            away_odds = st.number_input("Away Odds", min_value=1.01, value=2.00, step=0.05, format="%.2f")
+        draw_odds = st.number_input("Draw Odds", min_value=1.01, value=3.50, step=0.05, format="%.2f")
 
         if st.button("Get Prediction", type="primary"):
             features = prepare_basic_features(
@@ -586,7 +593,6 @@ def main():
                     away_odds,
                     draw_odds
                 )
-
     else:
         # Navigation controls
         col1, col2, col3 = st.columns([1, 3, 1])
