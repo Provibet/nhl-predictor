@@ -1,186 +1,27 @@
-# Standard library imports
-import io
-import re
-from datetime import datetime
-import pytz
-
-# Third-party imports
 import streamlit as st
 import pandas as pd
 import numpy as np
-import matplotlib.pyplot as plt
 from sqlalchemy import create_engine
 import joblib
-import requests
-from bs4 import BeautifulSoup
-
-# Google API imports
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload
+import io
+import matplotlib.pyplot as plt
 
-from selenium import webdriver
-from selenium.webdriver.edge.service import Service
-from selenium.webdriver.edge.options import Options
-from selenium.webdriver.common.by import By
-from selenium.webdriver.edge.service import Service as EdgeService
-from webdriver_manager.microsoft import EdgeChromiumDriverManager
-
-# Page configuration
-def setup_page():
-    st.set_page_config(page_title="NHL Game Predictor", page_icon="🏒", layout="wide")
+# Page config
+st.set_page_config(page_title="NHL Game Predictor", page_icon="🏒", layout="wide")
 
 
-# Team name mappings
-TEAM_MAPPINGS = {
-    # Eastern Conference
-    'Boston': 'Boston Bruins',
-    'Buffalo': 'Buffalo Sabres',
-    'Carolina': 'Carolina Hurricanes',
-    'Columbus': 'Columbus Blue Jackets',
-    'Detroit': 'Detroit Red Wings',
-    'Florida': 'Florida Panthers',
-    'Montreal': 'Montreal Canadiens',
-    'New Jersey': 'New Jersey Devils',
-    'NY Islanders': 'New York Islanders',
-    'NY Rangers': 'New York Rangers',
-    'Ottawa': 'Ottawa Senators',
-    'Philadelphia': 'Philadelphia Flyers',
-    'Pittsburgh': 'Pittsburgh Penguins',
-    'Tampa Bay': 'Tampa Bay Lightning',
-    'Toronto': 'Toronto Maple Leafs',
-    'Washington': 'Washington Capitals',
-
-    # Western Conference
-    'Anaheim': 'Anaheim Ducks',
-    'Arizona': 'Arizona Coyotes',
-    'Calgary': 'Calgary Flames',
-    'Chicago': 'Chicago Blackhawks',
-    'Colorado': 'Colorado Avalanche',
-    'Dallas': 'Dallas Stars',
-    'Edmonton': 'Edmonton Oilers',
-    'Los Angeles': 'Los Angeles Kings',
-    'Minnesota': 'Minnesota Wild',
-    'Nashville': 'Nashville Predators',
-    'San Jose': 'San Jose Sharks',
-    'Seattle': 'Seattle Kraken',
-    'St. Louis': 'St. Louis Blues',
-    'Utah': 'Utah Hockey Club',
-    'Vancouver': 'Vancouver Canucks',
-    'Vegas': 'Vegas Golden Knights',
-    'Winnipeg': 'Winnipeg Jets',
-
-    # Alternative names
-    'NY': 'New York Rangers',
-    'TB': 'Tampa Bay Lightning',
-    'NJ': 'New Jersey Devils',
-    'LA': 'Los Angeles Kings',
-    'SJ': 'San Jose Sharks',
-    'VGK': 'Vegas Golden Knights',
-    'NYR': 'New York Rangers',
-    'NYI': 'New York Islanders',
-    'TBL': 'Tampa Bay Lightning',
-    'STL': 'St. Louis Blues',
-    'CBJ': 'Columbus Blue Jackets',
-    'Utah HC': 'Utah Hockey Club'
-}
+# Database connection
+@st.cache_resource
+def init_connection():
+    return create_engine(st.secrets["db_connection"])
 
 
-def clean_team_name(team_name):
-    """Clean and standardize team names to match database format"""
-    cleaned_name = team_name.strip()
-    return TEAM_MAPPINGS.get(cleaned_name, cleaned_name)
-
-
-def extract_decimal_odds(odds_text):
-    """Extract and convert odds to decimal format"""
-    try:
-        odds_text = re.sub(r'[^0-9.-]', '', odds_text)
-        return float(odds_text) if odds_text else 3.5
-    except:
-        return 2.0
-
-
-@st.cache_data(ttl=300)  # Cache for 5 minutes
-def scrape_nhl_odds():
-    """Scrape NHL odds from checkbestodds.com using Edge Selenium"""
-    driver = None
-    try:
-        print("Setting up Edge options...")
-        edge_options = Options()
-        edge_options.add_argument('--headless')
-        edge_options.add_argument('--start-maximized')
-        edge_options.add_argument('--no-sandbox')
-        edge_options.add_argument('--disable-dev-shm-usage')
-        edge_options.add_experimental_option('excludeSwitches', ['enable-logging'])
-
-        print("Setting up Edge service...")
-        service = EdgeService(EdgeChromiumDriverManager().install())
-
-        print("Initializing Edge driver...")
-        driver = webdriver.Edge(service=service, options=edge_options)
-
-        with st.spinner("Fetching latest odds..."):
-            driver.get("https://checkbestodds.com/hockey-odds/nhl")
-            time.sleep(5)  # Wait for page load
-
-            games = []
-            game_links = driver.find_elements(By.CSS_SELECTOR, "td.l2.match a")
-
-            for link in game_links:
-                try:
-                    # Get parent row
-                    row = link.find_element(By.XPATH, "./..").find_element(By.XPATH, "./..")
-
-                    # Get time
-                    time_elem = row.find_element(By.CSS_SELECTOR, "span.time.hM")
-                    game_time = time_elem.text.strip()
-
-                    # Get teams
-                    teams_text = link.text.strip()
-                    teams = teams_text.split(" - ")
-                    if len(teams) != 2:
-                        continue
-
-                    away_team = clean_team_name(teams[0].strip())
-                    home_team = clean_team_name(teams[1].strip())
-
-                    # Get odds cells
-                    odds_cells = row.find_elements(By.CSS_SELECTOR, "td.r b")
-                    if len(odds_cells) < 3:
-                        continue
-
-                    # Format odds to always show 2 decimal places
-                    away_odds = f"{float(odds_cells[0].text.strip()):.2f}"
-                    draw_odds = f"{float(odds_cells[1].text.strip()):.2f}"
-                    home_odds = f"{float(odds_cells[2].text.strip()):.2f}"
-
-                    games.append({
-                        'away_team': away_team,
-                        'home_team': home_team,
-                        'away_odds': float(away_odds),
-                        'draw_odds': float(draw_odds),
-                        'home_odds': float(home_odds),
-                        'game_time': game_time
-                    })
-
-                except Exception as e:
-                    st.warning(f"Error processing game: {str(e)}")
-                    continue
-
-            return games
-
-    except Exception as e:
-        st.error(f"Error during scraping: {str(e)}")
-        return []
-
-    finally:
-        if driver:
-            driver.quit()
-
+# Model loading from Google Drive
 @st.cache_resource
 def load_model_from_drive():
-    """Load the prediction model from Google Drive"""
     try:
         credentials = service_account.Credentials.from_service_account_info(
             st.secrets["gcp_service_account"],
@@ -214,11 +55,8 @@ def load_model_from_drive():
         st.error(f"Error loading model from Google Drive: {str(e)}")
         return None
 
-@st.cache_resource
-def init_connection():
-    return create_engine(st.secrets["db_connection"])
 
-
+# Helper functions
 @st.cache_data
 def get_teams():
     engine = init_connection()
@@ -283,6 +121,7 @@ def get_team_stats(team):
     engine = init_connection()
     result = pd.read_sql(query, engine, params={'team': team})
 
+    # Return default values if no data found
     default_values = {
         'goalsFor': 2.5,
         'goalsAgainst': 2.5,
@@ -298,6 +137,7 @@ def get_team_stats(team):
     if result.empty:
         return pd.Series(default_values)
 
+    # Replace any None or NaN values with defaults
     for col in result.columns:
         if col in default_values:
             result[col] = result[col].fillna(default_values[col])
@@ -336,19 +176,22 @@ def get_head_to_head_stats(home_team, away_team):
     return result.iloc[0] if not result.empty else pd.Series({
         'games_played': 0,
         'home_team_wins': 0,
-        'avg_total_goals': 5.0
+        'avg_total_goals': 5.0  # Default value
     })
 
 
 def safe_get(stats, key, default=0.0):
     """Safely get a value from stats with robust type checking and conversion"""
     try:
+        # Get the value, use default if not found or None
         val = stats.get(key)
         if val is None or pd.isna(val):
             return float(default)
 
+        # Try to convert to float, use default if fails
         try:
             val = float(val)
+            # Check for infinite or NaN values
             if np.isinf(val) or np.isnan(val):
                 return float(default)
             return val
@@ -362,11 +205,13 @@ def safe_get(stats, key, default=0.0):
 def prepare_basic_features(home_team, away_team, home_odds, away_odds, draw_odds):
     """Prepare features with robust error handling"""
     try:
+        # Get team stats with debug output
         st.write("Fetching team stats...")
         home_stats = get_team_stats(home_team)
         away_stats = get_team_stats(away_team)
         h2h_stats = get_head_to_head_stats(home_team, away_team)
 
+        # Debug raw data
         with st.expander("Raw Data"):
             st.write("Home Stats:", dict(home_stats))
             st.write("Away Stats:", dict(away_stats))
@@ -501,6 +346,30 @@ def display_prediction_results(probs, home_team, away_team, home_odds, away_odds
             delta_color="normal" if probs[2] == max(probs) else "off"
         )
 
+    # Display model's prediction with confidence
+    st.subheader("Model Prediction")
+    if confidence > 0.5:
+        st.success(f"Strong Prediction: {teams[best_pred_idx]} ({confidence:.1%} confident)")
+    elif confidence > 0.4:
+        st.info(f"Moderate Prediction: {teams[best_pred_idx]} ({confidence:.1%} confident)")
+    else:
+        st.warning(f"Low Confidence Prediction: {teams[best_pred_idx]} ({confidence:.1%} confident)")
+
+    # Additional confidence analysis
+    st.subheader("Prediction Confidence Analysis")
+    confidence_explanation = {
+        (0.6, 1.0): "Very High Confidence - Model strongly favors this outcome",
+        (0.5, 0.6): "High Confidence - Model shows clear preference",
+        (0.4, 0.5): "Moderate Confidence - Model shows slight preference",
+        (0.33, 0.4): "Low Confidence - Prediction uncertainty is high",
+        (0, 0.33): "Very Low Confidence - Too close to call"
+    }
+
+    for (lower, upper), explanation in confidence_explanation.items():
+        if confidence >= lower and confidence < upper:
+            st.write(explanation)
+            break
+
     # Create visualization
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(15, 5))
 
@@ -524,6 +393,23 @@ def display_prediction_results(probs, home_team, away_team, home_odds, away_odds
     plt.tight_layout()
     st.pyplot(fig)
 
+    # Detailed stats comparison
+    st.subheader("Prediction Factors")
+    factors_df = pd.DataFrame({
+        'Factor': ['Model Confidence', 'Probability Margin', 'Prediction Strength'],
+        'Value': [
+            f"{confidence:.1%}",
+            f"{(max(probs) - sorted(probs)[-2]):.1%}",
+            "Strong" if confidence > 0.5 else "Moderate" if confidence > 0.4 else "Weak"
+        ],
+        'Interpretation': [
+            "How confident the model is in its prediction",
+            "Difference between best and second-best prediction",
+            "Overall strength of the prediction signal"
+        ]
+    })
+    st.table(factors_df)
+
     # Warning for low confidence predictions
     if confidence < 0.4:
         st.warning("""
@@ -534,16 +420,7 @@ def display_prediction_results(probs, home_team, away_team, home_odds, away_odds
         """)
 
 def main():
-    setup_page()
     st.title("NHL Game Predictor 🏒")
-
-    # Initialize session state for game index if not exists
-    if 'game_index' not in st.session_state:
-        st.session_state.game_index = 0
-    if 'games' not in st.session_state:
-        st.session_state.games = []
-    if 'predictions_cache' not in st.session_state:
-        st.session_state.predictions_cache = {}
 
     # Load model
     with st.spinner("Loading prediction model..."):
@@ -553,190 +430,122 @@ def main():
         st.error("Failed to load model. Please check the connection.")
         return
 
-    # Add refresh button for odds
-    if st.button("🔄 Refresh Odds"):
-        st.cache_data.clear()
-        st.session_state.predictions_cache = {}
-        st.session_state.games = []
+    # Create interface
+    col1, col2 = st.columns(2)
 
-    # Scrape current odds
-    games = scrape_nhl_odds()
-    if games:
-        st.session_state.games = games
+    with col1:
+        home_team = st.selectbox("Home Team", get_teams())
+        home_odds = st.number_input("Home Odds", min_value=1.01, value=2.0, step=0.05)
 
-    if not st.session_state.games:
-        st.error("Failed to fetch odds. Showing manual input mode.")
-        # Fall back to manual input mode
-        col1, col2 = st.columns(2)
-        with col1:
-            home_team = st.selectbox("Home Team", get_teams())
-            home_odds = st.number_input("Home Odds", min_value=1.01, value=2.00, step=0.05, format="%.2f")
-        with col2:
-            away_team = st.selectbox("Away Team", get_teams())
-            away_odds = st.number_input("Away Odds", min_value=1.01, value=2.00, step=0.05, format="%.2f")
-        draw_odds = st.number_input("Draw Odds", min_value=1.01, value=3.50, step=0.05, format="%.2f")
+    with col2:
+        away_team = st.selectbox("Away Team", get_teams())
+        away_odds = st.number_input("Away Odds", min_value=1.01, value=2.0, step=0.05)
 
-        if st.button("Get Prediction", type="primary"):
-            features = prepare_basic_features(
-                home_team,
-                away_team,
-                home_odds,
-                away_odds,
-                draw_odds
-            )
+    draw_odds = st.number_input("Draw Odds", min_value=1.01, value=3.5, step=0.05)
 
-            if features is not None:
-                probabilities = model.predict_proba(features)[0]
-                display_prediction_results(
-                    probabilities,
-                    home_team,
-                    away_team,
-                    home_odds,
-                    away_odds,
-                    draw_odds
-                )
-    else:
-        # Navigation controls
-        col1, col2, col3 = st.columns([1, 3, 1])
-        with col1:
-            if st.button("⬅️ Previous Game") and st.session_state.game_index > 0:
-                st.session_state.game_index -= 1
-        with col2:
-            st.write(f"Game {st.session_state.game_index + 1} of {len(st.session_state.games)}")
-        with col3:
-            if st.button("Next Game ➡️") and st.session_state.game_index < len(st.session_state.games) - 1:
-                st.session_state.game_index += 1
+    if st.button("Get Prediction", type="primary"):
+        if home_team == away_team:
+            st.error("Please select different teams")
+            return
 
-        # Display current game
-        current_game = st.session_state.games[st.session_state.game_index]
-
-        # Create columns for team names and odds
-        col1, col2, col3 = st.columns([2, 1, 2])
-
-        with col1:
-            st.subheader(f"🏃 {current_game['away_team']}")
-            st.metric("Away Odds", f"{current_game['away_odds']:.2f}")
-
-        with col2:
-            st.subheader("vs")
-            st.metric("Draw Odds", f"{current_game['draw_odds']:.2f}")
-
-        with col3:
-            st.subheader(f"🏠 {current_game['home_team']}")
-            st.metric("Home Odds", f"{current_game['home_odds']:.2f}")
-
-        st.write(f"Game Time: {current_game['game_time']}")
-
-        # Check if we have a cached prediction
-        game_key = f"{current_game['home_team']}_{current_game['away_team']}"
-
-        if game_key not in st.session_state.predictions_cache:
-            # Make new prediction
+        try:
             with st.spinner("Analyzing matchup..."):
+                # Prepare features
                 features = prepare_basic_features(
-                    current_game['home_team'],
-                    current_game['away_team'],
-                    current_game['home_odds'],
-                    current_game['away_odds'],
-                    current_game['draw_odds']
+                    home_team, away_team,
+                    home_odds, away_odds, draw_odds
                 )
 
                 if features is not None:
+                    # Make prediction
                     probabilities = model.predict_proba(features)[0]
-                    st.session_state.predictions_cache[game_key] = {
-                        'probabilities': probabilities,
-                        'features': features
-                    }
 
-        # Display prediction if we have it
-        if game_key in st.session_state.predictions_cache:
-            prediction_data = st.session_state.predictions_cache[game_key]
+                    # Show debug info in expander
+                    with st.expander("Debug Information"):
+                        st.write("Model Input Features:")
+                        st.dataframe(features)
+                        st.write("Raw Model Probabilities:")
+                        st.write({
+                            "Away Win": f"{probabilities[0]:.4f}",
+                            "Draw": f"{probabilities[1]:.4f}",
+                            "Home Win": f"{probabilities[2]:.4f}"
+                        })
 
-            # Show debug info in expander
-            with st.expander("Debug Information"):
-                st.write("Model Input Features:")
-                st.dataframe(prediction_data['features'])
-                st.write("Raw Model Probabilities:")
-                st.write({
-                    "Away Win": f"{prediction_data['probabilities'][0]:.4f}",
-                    "Draw": f"{prediction_data['probabilities'][1]:.4f}",
-                    "Home Win": f"{prediction_data['probabilities'][2]:.4f}"
-                })
+                    # Display results
+                    display_prediction_results(
+                        probabilities,
+                        home_team,
+                        away_team,
+                        home_odds,
+                        away_odds,
+                        draw_odds
+                    )
 
-            # Display results
-            display_prediction_results(
-                prediction_data['probabilities'],
-                current_game['home_team'],
-                current_game['away_team'],
-                current_game['home_odds'],
-                current_game['away_odds'],
-                current_game['draw_odds']
-            )
+                    # Show additional stats
+                    st.header("Team Statistics")
+                    col1, col2 = st.columns(2)
 
-            # Show team stats
-            st.header("Team Statistics")
-            stats_col1, stats_col2 = st.columns(2)
+                    try:
+                        home_stats = get_team_stats(home_team)
+                        away_stats = get_team_stats(away_team)
+                        h2h_stats = get_head_to_head_stats(home_team, away_team)
 
-            try:
-                home_stats = get_team_stats(current_game['home_team'])
-                away_stats = get_team_stats(current_game['away_team'])
-                h2h_stats = get_head_to_head_stats(current_game['home_team'], current_game['away_team'])
+                        with col1:
+                            st.subheader(f"{home_team} Stats")
+                            st.metric("Goals For", f"{safe_get(home_stats, 'goalsFor'):.2f}")
+                            st.metric("xG%", f"{safe_get(home_stats, 'xGoalsPercentage'):.1f}%")
+                            st.metric("Corsi%", f"{safe_get(home_stats, 'corsiPercentage'):.1f}%")
+                            st.metric("Recent Win Rate", f"{safe_get(home_stats, 'recent_win_rate')*100:.1f}%")
 
-                with stats_col1:
-                    st.subheader(f"{current_game['home_team']} Stats")
-                    st.metric("Goals For", f"{home_stats['goalsFor']:.2f}")
-                    st.metric("xG%", f"{home_stats['xGoalsPercentage']:.1f}%")
-                    st.metric("Corsi%", f"{home_stats['corsiPercentage']:.1f}%")
-                    st.metric("Recent Win Rate", f"{home_stats['recent_win_rate'] * 100:.1f}%")
+                        with col2:
+                            st.subheader(f"{away_team} Stats")
+                            st.metric("Goals For", f"{safe_get(away_stats, 'goalsFor'):.2f}")
+                            st.metric("xG%", f"{safe_get(away_stats, 'xGoalsPercentage'):.1f}%")
+                            st.metric("Corsi%", f"{safe_get(away_stats, 'corsiPercentage'):.1f}%")
+                            st.metric("Recent Win Rate", f"{safe_get(away_stats, 'recent_win_rate')*100:.1f}%")
 
-                with stats_col2:
-                    st.subheader(f"{current_game['away_team']} Stats")
-                    st.metric("Goals For", f"{away_stats['goalsFor']:.2f}")
-                    st.metric("xG%", f"{away_stats['xGoalsPercentage']:.1f}%")
-                    st.metric("Corsi%", f"{away_stats['corsiPercentage']:.1f}%")
-                    st.metric("Recent Win Rate", f"{away_stats['recent_win_rate'] * 100:.1f}%")
+                        # Head to Head Stats
+                        if h2h_stats['games_played'] > 0:
+                            st.header("Head to Head History")
+                            st.write(f"Previous Meetings: {int(h2h_stats['games_played'])}")
+                            home_wins = int(h2h_stats['home_team_wins'])
+                            away_wins = int(h2h_stats['games_played'] - h2h_stats['home_team_wins'])
+                            st.write(f"{home_team} Wins: {home_wins}")
+                            st.write(f"{away_team} Wins: {away_wins}")
+                            st.write(f"Average Total Goals: {h2h_stats['avg_total_goals']:.1f}")
+                        else:
+                            st.info("No recent head-to-head matches found")
 
-                # Head to Head Stats
-                if h2h_stats['games_played'] > 0:
-                    st.header("Head to Head History")
-                    h2h_col1, h2h_col2 = st.columns(2)
-                    with h2h_col1:
-                        st.write(f"Previous Meetings: {int(h2h_stats['games_played'])}")
-                        st.write(f"Average Total Goals: {h2h_stats['avg_total_goals']:.1f}")
-                    with h2h_col2:
-                        home_wins = int(h2h_stats['home_team_wins'])
-                        away_wins = int(h2h_stats['games_played'] - h2h_stats['home_team_wins'])
-                        st.write(f"{current_game['home_team']} Wins: {home_wins}")
-                        st.write(f"{current_game['away_team']} Wins: {away_wins}")
-                else:
-                    st.info("No recent head-to-head matches found")
+                    except Exception as e:
+                        st.error(f"Error displaying team stats: {str(e)}")
 
-            except Exception as e:
-                st.error(f"Error displaying team stats: {str(e)}")
+        except Exception as e:
+            st.error(f"Error making prediction: {str(e)}")
+            st.write("Debug information:")
+            st.write(f"Home team: {home_team}")
+            st.write(f"Away team: {away_team}")
+            st.write(f"Odds: {home_odds}/{away_odds}/{draw_odds}")
 
     # Add information about how to use
     with st.expander("How to use"):
         st.write("""
-        1. The app automatically fetches today's NHL games and odds
-        2. Use the Previous/Next buttons to navigate through games
-        3. Each game shows:
-           - Team matchup and current odds
+        1. Select the home and away teams
+        2. Enter the current betting odds (decimal format)
+        3. Click 'Get Prediction' for analysis
+        4. The model will show:
            - Win/Draw probabilities
+           - Betting value analysis
            - Team statistics comparison
            - Head-to-head history (if available)
-
-        Note: Click 'Refresh Odds' to get the latest odds data.
         """)
 
     # Add footer
     st.markdown("---")
     st.markdown("""
         <div style='text-align: center'>
-            <p>NHL Game Predictor v4.2 | Using updated model trained on 2023-24 season data</p>
-            <p>Odds data provided by checkbestodds.com</p>
+            <p>NHL Game Predictor v4.1 | Using updated model trained on 2023-24 season data</p>
         </div>
         """, unsafe_allow_html=True)
-
 
 if __name__ == "__main__":
     main()
