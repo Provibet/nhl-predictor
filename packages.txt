@@ -1,16 +1,1 @@
-# General system dependencies
-libnss3
-libxss1
-libgconf-2-4
-libfontconfig1
-libgbm1
-libasound2
-libgtk-3-0  # Required for GUI-based drivers like Selenium
-wget        # Utility to fetch files, useful for debugging
-unzip       # To extract WebDriver archives if needed
-
-# Specific dependencies for Edge WebDriver (optional, if using Edge)
-microsoft-edge-stable  # Install Microsoft Edge (ensure compatibility)
-
-# Optional tools
-curl        # Useful for debugging network issues
+microsoft-edge-stable 
