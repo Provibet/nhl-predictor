@@ -18,6 +18,64 @@ st.set_page_config(page_title="NHL Game Predictor", page_icon="🏒", layout="wi
 def init_connection():
     return create_engine(st.secrets["db_connection"])
 
+
+@st.cache_resource
+def load_model_from_drive():
+    try:
+        credentials = service_account.Credentials.from_service_account_info(
+            st.secrets["gcp_service_account"],
+            scopes=['https://www.googleapis.com/auth/drive.readonly']
+        )
+
+        service = build('drive', 'v3', credentials=credentials)
+        file_id = st.secrets["drive_folder_id"]
+        model_name = "nhl_game_predictor_ensemble_v4.1_balanced.pkl"
+
+        query = f"name='{model_name}' and '{file_id}' in parents"
+        results = service.files().list(q=query, fields="files(id, name)").execute()
+        files = results.get('files', [])
+
+        if not files:
+            st.error("Model file not found in Drive")
+            return None
+
+        request = service.files().get_media(fileId=files[0]['id'])
+        file_handle = io.BytesIO()
+        downloader = MediaIoBaseDownload(file_handle, request)
+
+        done = False
+        while not done:
+            _, done = downloader.next_chunk()
+
+        file_handle.seek(0)
+        return joblib.load(file_handle)
+
+    except Exception as e:
+        st.error(f"Error loading model from Google Drive: {str(e)}")
+        return None
+
+
+def prepare_model_features(home_stats, away_stats, h2h_stats, home_odds, away_odds, draw_odds):
+    """Prepare features in format expected by model"""
+    features = {
+        'h2h_home_win_pct': float(h2h_stats['home_team_wins']) / max(float(h2h_stats['games_played']), 1),
+        'h2h_games_played': float(h2h_stats['games_played']),
+        'h2h_avg_total_goals': 5.5,  # Default if no h2h games
+        'draw_implied_prob_normalized': (1 / draw_odds) / ((1 / home_odds) + (1 / away_odds) + (1 / draw_odds)),
+
+        # Team relative ratios
+        'relative_recent_wins_ratio': float(home_stats['recent_win_rate']) / max(float(away_stats['recent_win_rate']),
+                                                                                 0.001),
+        'relative_xGoalsPercentage_ratio': float(home_stats['xGoalsPercentage']) / max(
+            float(away_stats['xGoalsPercentage']), 0.001),
+        'relative_corsiPercentage_ratio': float(home_stats['corsiPercentage']) / max(
+            float(away_stats['corsiPercentage']), 0.001),
+        'relative_fenwickPercentage_ratio': float(home_stats['fenwickPercentage']) / max(
+            float(away_stats['fenwickPercentage']), 0.001)
+    }
+
+    return pd.DataFrame([features])
+
 # Feature calculation functions
 def calculate_xg_score(home_stats, away_stats):
     xg_home = home_stats['xGoalsPercentage']
@@ -95,7 +153,6 @@ def get_team_stats(team):
 def validate_data_quality(home_stats, away_stats, h2h_stats):
     """Validate data meets minimum quality thresholds"""
     MIN_GAMES = 5
-    MIN_H2H = 0
 
     if home_stats is None or away_stats is None:
         return False, "Missing team stats"
@@ -104,10 +161,13 @@ def validate_data_quality(home_stats, away_stats, h2h_stats):
     if float(home_stats['games_played']) < MIN_GAMES or float(away_stats['games_played']) < MIN_GAMES:
         return False, "Insufficient recent games"
 
-    if float(h2h_stats['games_played']) < MIN_H2H:
-        return False, "Insufficient head-to-head history"
-
     return True, "Data quality checks passed"
+
+def calculate_h2h_importance(h2h_stats):
+    """Adjust feature weights based on h2h data availability"""
+    if float(h2h_stats['games_played']) >= 2:
+        return 0.20  # Full h2h weight when we have enough games
+    return 0.0  # No h2h weight when insufficient data
 
 
 def get_head_to_head_stats(home_team, away_team):
@@ -135,7 +195,8 @@ def get_head_to_head_stats(home_team, away_team):
     return result.iloc[0] if not result.empty else pd.Series({'games_played': 0, 'home_team_wins': 0})
 
 
-def calculate_prediction(home_team, away_team, home_odds, away_odds, draw_odds):
+def calculate_prediction(home_team, away_team, home_odds, away_odds, draw_odds, model):
+    """Make prediction using trained model"""
     # Get stats
     home_stats = get_team_stats(home_team)
     away_stats = get_team_stats(away_team)
@@ -146,26 +207,11 @@ def calculate_prediction(home_team, away_team, home_odds, away_odds, draw_odds):
     if not is_valid:
         return None, message
 
-    # Calculate weighted features
-    features = {
-        'xg_score': calculate_xg_score(home_stats, away_stats) * 0.25,
-        'form_score': calculate_form_score(home_stats, away_stats) * 0.20,
-        'h2h_score': calculate_h2h_score(h2h_stats) * 0.20,
-        'possession_score': calculate_possession_score(home_stats, away_stats) * 0.15,
-        'market_score': calculate_market_score(home_odds, away_odds, draw_odds) * 0.10
-    }
+    # Prepare features
+    features_df = prepare_model_features(home_stats, away_stats, h2h_stats, home_odds, away_odds, draw_odds)
 
-    # Calculate final prediction
-    total_score = sum(features.values())
-
-    # Convert to probabilities
-    home_prob = total_score
-    away_prob = 1 - total_score
-    draw_prob = 0.2  # Base draw probability
-
-    # Normalize
-    total = home_prob + away_prob + draw_prob
-    probabilities = [away_prob / total, draw_prob / total, home_prob / total]
+    # Make prediction
+    probabilities = model.predict_proba(features_df)[0]
 
     return probabilities, "Valid prediction"
 
@@ -238,8 +284,17 @@ def display_team_stats(home_stats, away_stats, home_team, away_team):
         st.metric("Corsi%", f"{away_stats['corsiPercentage']:.1f}%")
         st.metric("Recent Win Rate", f"{away_stats['recent_win_rate'] * 100:.1f}%")
 
+
 def main():
     st.title("NHL Game Predictor 🏒")
+
+    # Load model
+    with st.spinner("Loading prediction model..."):
+        model = load_model_from_drive()
+
+    if model is None:
+        st.error("Failed to load model. Please check the connection.")
+        return
 
     col1, col2 = st.columns(2)
     with col1:
@@ -259,7 +314,8 @@ def main():
 
         probabilities, message = calculate_prediction(
             home_team, away_team,
-            home_odds, away_odds, draw_odds
+            home_odds, away_odds, draw_odds,
+            model
         )
 
         if probabilities is None:
@@ -276,12 +332,29 @@ def main():
             away_stats = get_team_stats(away_team)
             display_team_stats(home_stats, away_stats, home_team, away_team)
 
-        st.markdown("---")
-        st.markdown("""
-               <div style='text-align: center'>
-                   <p>NHL Game Predictor v5.0 | Quality-First Predictions</p>
-               </div>
-               """, unsafe_allow_html=True)
+            # Add h2h info if available
+            h2h_stats = get_head_to_head_stats(home_team, away_team)
+            if float(h2h_stats['games_played']) > 0:
+                st.header("Head to Head History")
+                st.write(f"Previous Meetings: {int(h2h_stats['games_played'])}")
+                home_wins = int(h2h_stats['home_team_wins'])
+                away_wins = int(h2h_stats['games_played'] - h2h_stats['home_team_wins'])
+                st.write(f"{home_team} Wins: {home_wins}")
+                st.write(f"{away_team} Wins: {away_wins}")
+
+            # Add feature explanation
+            with st.expander("Feature Importance Details"):
+                st.write("Model considers:")
+                st.write("- Recent team performance metrics (xG%, Corsi%, Win Rate)")
+                st.write("- Head-to-head history (if available)")
+                st.write("- Market odds and implied probabilities")
+
+    st.markdown("---")
+    st.markdown("""
+        <div style='text-align: center'>
+            <p>NHL Game Predictor v5.0 | Quality-First Predictions</p>
+        </div>
+        """, unsafe_allow_html=True)
 
 if __name__ == "__main__":
     main()
