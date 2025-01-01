@@ -54,37 +54,46 @@ def load_model_from_drive():
         st.error(f"Error loading model from Google Drive: {str(e)}")
         return None
 
-
 def prepare_model_features(home_stats, away_stats, h2h_stats, home_odds, away_odds, draw_odds):
     """Prepare features in format expected by model"""
+    
+    # Safe conversion helper
+    def safe_float(value, default=0.0):
+        if value is None:
+            return default
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return default
+            
     features = {
         # H2H features
-        'h2h_home_win_pct': float(h2h_stats['home_team_wins']) / max(float(h2h_stats['games_played']), 1),
-        'h2h_games_played': float(h2h_stats['games_played']),
+        'h2h_home_win_pct': safe_float(h2h_stats['home_team_wins']) / max(safe_float(h2h_stats['games_played']), 1),
+        'h2h_games_played': safe_float(h2h_stats['games_played']),
         'h2h_avg_total_goals': 5.5,  # Default if no h2h games
         'draw_implied_prob_normalized': (1 / draw_odds) / ((1 / home_odds) + (1 / away_odds) + (1 / draw_odds)),
 
         # Recent performance ratios
-        'relative_recent_wins_ratio': float(home_stats['recent_win_rate']) / max(float(away_stats['recent_win_rate']), 0.001),
-        'relative_recent_goals_avg_ratio': float(home_stats['goalsFor']) / max(float(away_stats['goalsFor']), 0.001),
-        'relative_recent_goals_allowed_ratio': float(home_stats['goalsAgainst']) / max(float(away_stats['goalsAgainst']), 0.001),
+        'relative_recent_wins_ratio': safe_float(home_stats['recent_win_rate']) / max(safe_float(away_stats['recent_win_rate']), 0.001),
+        'relative_recent_goals_avg_ratio': safe_float(home_stats['goalsFor']) / max(safe_float(away_stats['goalsFor']), 0.001),
+        'relative_recent_goals_allowed_ratio': safe_float(home_stats['goalsAgainst']) / max(safe_float(away_stats['goalsAgainst']), 0.001),
 
-        # Goalie ratios (using default values since we don't have goalie stats)
-        'relative_goalie_save_pct_ratio': 1.0,  # Default to equal
-        'relative_goalie_games_ratio': 1.0,  # Default to equal
+        # Goalie ratios
+        'relative_goalie_save_pct_ratio': 1.0,
+        'relative_goalie_games_ratio': 1.0,
 
-        # Team scoring ratios
-        'relative_team_goals_per_game_ratio': float(home_stats['goalsFor']) / max(float(away_stats['goalsFor']), 0.001),
-        'relative_team_top_scorer_goals_ratio': 1.0,  # Default since we don't have this data
+        # Team scoring ratios 
+        'relative_team_goals_per_game_ratio': safe_float(home_stats['goalsFor']) / max(safe_float(away_stats['goalsFor']), 0.001),
+        'relative_team_top_scorer_goals_ratio': 1.0,
 
         # Market ratio
         'relative_implied_prob_normalized_ratio': ((1/home_odds) / ((1/home_odds) + (1/away_odds) + (1/draw_odds))) / 
                                                 max((1/away_odds) / ((1/home_odds) + (1/away_odds) + (1/draw_odds)), 0.001),
 
         # Advanced stats ratios
-        'relative_xGoalsPercentage_ratio': float(home_stats['xGoalsPercentage']) / max(float(away_stats['xGoalsPercentage']), 0.001),
-        'relative_corsiPercentage_ratio': float(home_stats['corsiPercentage']) / max(float(away_stats['corsiPercentage']), 0.001),
-        'relative_fenwickPercentage_ratio': float(home_stats['fenwickPercentage']) / max(float(away_stats['fenwickPercentage']), 0.001)
+        'relative_xGoalsPercentage_ratio': safe_float(home_stats['xGoalsPercentage']) / max(safe_float(away_stats['xGoalsPercentage']), 0.001),
+        'relative_corsiPercentage_ratio': safe_float(home_stats['corsiPercentage']) / max(safe_float(away_stats['corsiPercentage']), 0.001),
+        'relative_fenwickPercentage_ratio': safe_float(home_stats['fenwickPercentage']) / max(safe_float(away_stats['fenwickPercentage']), 0.001)
     }
 
     return pd.DataFrame([features])
