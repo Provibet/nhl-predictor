@@ -97,13 +97,14 @@ def validate_data_quality(home_stats, away_stats, h2h_stats):
     MIN_GAMES = 5
     MIN_H2H = 2
 
-    if not all([home_stats, away_stats]):
+    if home_stats is None or away_stats is None:
         return False, "Missing team stats"
 
-    if home_stats['games_played'] < MIN_GAMES or away_stats['games_played'] < MIN_GAMES:
+    # Convert to float to avoid pandas Series boolean ambiguity
+    if float(home_stats['games_played']) < MIN_GAMES or float(away_stats['games_played']) < MIN_GAMES:
         return False, "Insufficient recent games"
 
-    if h2h_stats['games_played'] < MIN_H2H:
+    if float(h2h_stats['games_played']) < MIN_H2H:
         return False, "Insufficient head-to-head history"
 
     return True, "Data quality checks passed"
