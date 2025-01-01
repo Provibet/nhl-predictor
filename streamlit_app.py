@@ -13,6 +13,65 @@ import matplotlib.pyplot as plt
 st.set_page_config(page_title="NHL Game Predictor", page_icon="🏒", layout="wide")
 
 
+def validate_features(features_df):
+    required_ranges = {
+        'h2h_home_win_pct': (0, 1),
+        'h2h_games_played': (0, 10),
+        'h2h_avg_total_goals': (0, 15),
+        'relative_recent_wins_ratio': (0.1, 10),
+        'relative_recent_goals_avg_ratio': (0.1, 10),
+        'relative_recent_goals_allowed_ratio': (0.1, 10),
+        'relative_goalie_save_pct_ratio': (0.8, 1.2),
+        'relative_goalie_games_ratio': (0.1, 10),
+        'relative_xGoalsPercentage_ratio': (0.2, 5),
+        'relative_corsiPercentage_ratio': (0.2, 5),
+        'relative_fenwickPercentage_ratio': (0.2, 5)
+    }
+
+    for col, (min_val, max_val) in required_ranges.items():
+        if col in features_df.columns:
+            features_df[col] = features_df[col].clip(min_val, max_val)
+
+    return features_df
+
+
+def assess_prediction_quality(features_df, probabilities):
+    quality_score = 0
+    reasons = []
+
+    # Data quality checks
+    if features_df['h2h_games_played'].iloc[0] < 2:
+        quality_score -= 0.2
+        reasons.append("Limited head-to-head data")
+
+    if features_df['relative_goalie_games_ratio'].iloc[0] == 1.0:
+        quality_score -= 0.1
+        reasons.append("Missing goalie data")
+
+    # Probability checks
+    max_prob = max(probabilities)
+    prob_margin = max_prob - sorted(probabilities)[-2]
+
+    if max_prob > 0.5:
+        quality_score += 0.3
+    if prob_margin > 0.15:
+        quality_score += 0.2
+
+    # Store prediction data
+    if 'predictions' not in st.session_state:
+        st.session_state.predictions = []
+
+    prediction_data = {
+        'timestamp': pd.Timestamp.now(),
+        'confidence_score': quality_score,
+        'max_probability': max_prob,
+        'probability_margin': prob_margin
+    }
+    st.session_state.predictions.append(prediction_data)
+
+    return quality_score, reasons
+
+
 # Database connection
 @st.cache_resource
 def init_connection():
@@ -308,42 +367,50 @@ def prepare_basic_features(home_team, away_team, home_odds, away_odds, draw_odds
         return None
 
 
-def display_prediction_results(probs, home_team, away_team, home_odds, away_odds, draw_odds):
-    """Display prediction results focusing on model confidence"""
+def display_prediction_results(probs, home_team, away_team, home_odds, away_odds, draw_odds, features_df):
     st.header("Prediction Results")
 
-    # Find highest probability outcome
+    quality_score, quality_reasons = assess_prediction_quality(features_df, probs)
+
+    # Quality warning
+    if quality_score < 0:
+        st.warning("⚠️ Low confidence prediction - consider skipping")
+        for reason in quality_reasons:
+            st.write(f"- {reason}")
+
     outcomes = ["Away Win", "Draw", "Home Win"]
     teams = [away_team, "Draw", home_team]
     best_pred_idx = np.argmax(probs)
     confidence = probs[best_pred_idx]
 
-    # Create columns for display
+    # Value calculation
+    implied_probs = [1 / away_odds, 1 / draw_odds, 1 / home_odds]
+    values = [p - ip for p, ip in zip(probs, implied_probs)]
+
     col1, col2, col3 = st.columns(3)
 
-    # Display probabilities with confidence indicators
     with col1:
         st.metric(
             f"{away_team} (Away)",
             f"{probs[0]:.1%}",
-            f"Confidence: {'High' if probs[0] > 0.5 else 'Medium' if probs[0] > 0.33 else 'Low'}",
-            delta_color="normal" if probs[0] == max(probs) else "off"
+            f"Value: {values[0]:+.1%}",
+            delta_color="normal" if values[0] > 0 else "off"
         )
 
     with col2:
         st.metric(
             "Draw",
             f"{probs[1]:.1%}",
-            f"Confidence: {'High' if probs[1] > 0.5 else 'Medium' if probs[1] > 0.33 else 'Low'}",
-            delta_color="normal" if probs[1] == max(probs) else "off"
+            f"Value: {values[1]:+.1%}",
+            delta_color="normal" if values[1] > 0 else "off"
         )
 
     with col3:
         st.metric(
             f"{home_team} (Home)",
             f"{probs[2]:.1%}",
-            f"Confidence: {'High' if probs[2] > 0.5 else 'Medium' if probs[2] > 0.33 else 'Low'}",
-            delta_color="normal" if probs[2] == max(probs) else "off"
+            f"Value: {values[2]:+.1%}",
+            delta_color="normal" if values[2] > 0 else "off"
         )
 
     # Display model's prediction with confidence
@@ -450,35 +517,27 @@ def main():
 
         try:
             with st.spinner("Analyzing matchup..."):
-                # Prepare features
                 features = prepare_basic_features(
                     home_team, away_team,
                     home_odds, away_odds, draw_odds
                 )
 
                 if features is not None:
+                    # Validate features
+                    features = validate_features(features)
+
                     # Make prediction
                     probabilities = model.predict_proba(features)[0]
 
-                    # Show debug info in expander
-                    with st.expander("Debug Information"):
-                        st.write("Model Input Features:")
-                        st.dataframe(features)
-                        st.write("Raw Model Probabilities:")
-                        st.write({
-                            "Away Win": f"{probabilities[0]:.4f}",
-                            "Draw": f"{probabilities[1]:.4f}",
-                            "Home Win": f"{probabilities[2]:.4f}"
-                        })
-
-                    # Display results
+                    # Display results with validated features
                     display_prediction_results(
                         probabilities,
                         home_team,
                         away_team,
                         home_odds,
                         away_odds,
-                        draw_odds
+                        draw_odds,
+                        features
                     )
 
                     # Show additional stats
