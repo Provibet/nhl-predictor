@@ -95,7 +95,7 @@ def get_team_stats(team):
 def validate_data_quality(home_stats, away_stats, h2h_stats):
     """Validate data meets minimum quality thresholds"""
     MIN_GAMES = 5
-    MIN_H2H = 1
+    MIN_H2H = 0
 
     if home_stats is None or away_stats is None:
         return False, "Missing team stats"
