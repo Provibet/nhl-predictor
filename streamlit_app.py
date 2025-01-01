@@ -1,3 +1,4 @@
+# app.py
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -12,494 +13,234 @@ import matplotlib.pyplot as plt
 # Page config
 st.set_page_config(page_title="NHL Game Predictor", page_icon="🏒", layout="wide")
 
-
-def validate_features(features_df):
-    required_ranges = {
-        'h2h_home_win_pct': (0, 1),
-        'h2h_games_played': (0, 10),
-        'h2h_avg_total_goals': (0, 15),
-        'relative_recent_wins_ratio': (0.1, 10),
-        'relative_recent_goals_avg_ratio': (0.1, 10),
-        'relative_recent_goals_allowed_ratio': (0.1, 10),
-        'relative_goalie_save_pct_ratio': (0.8, 1.2),
-        'relative_goalie_games_ratio': (0.1, 10),
-        'relative_xGoalsPercentage_ratio': (0.2, 5),
-        'relative_corsiPercentage_ratio': (0.2, 5),
-        'relative_fenwickPercentage_ratio': (0.2, 5)
-    }
-
-    for col, (min_val, max_val) in required_ranges.items():
-        if col in features_df.columns:
-            features_df[col] = features_df[col].clip(min_val, max_val)
-
-    return features_df
-
-
-def assess_prediction_quality(features_df, probabilities):
-    quality_score = 0
-    reasons = []
-
-    # Data quality checks
-    if features_df['h2h_games_played'].iloc[0] < 2:
-        quality_score -= 0.2
-        reasons.append("Limited head-to-head data")
-
-    if features_df['relative_goalie_games_ratio'].iloc[0] == 1.0:
-        quality_score -= 0.1
-        reasons.append("Missing goalie data")
-
-    # Probability checks
-    max_prob = max(probabilities)
-    prob_margin = max_prob - sorted(probabilities)[-2]
-
-    if max_prob > 0.5:
-        quality_score += 0.3
-    if prob_margin > 0.15:
-        quality_score += 0.2
-
-    # Store prediction data
-    if 'predictions' not in st.session_state:
-        st.session_state.predictions = []
-
-    prediction_data = {
-        'timestamp': pd.Timestamp.now(),
-        'confidence_score': quality_score,
-        'max_probability': max_prob,
-        'probability_margin': prob_margin
-    }
-    st.session_state.predictions.append(prediction_data)
-
-    return quality_score, reasons
-
-
 # Database connection
 @st.cache_resource
 def init_connection():
     return create_engine(st.secrets["db_connection"])
 
+# Feature calculation functions
+def calculate_xg_score(home_stats, away_stats):
+    xg_home = home_stats['xGoalsPercentage']
+    xg_away = away_stats['xGoalsPercentage']
+    xg_diff = xg_home - xg_away
+    return xg_diff / 100  # Normalize to 0-1 range
 
-# Model loading from Google Drive
-@st.cache_resource
-def load_model_from_drive():
-    try:
-        credentials = service_account.Credentials.from_service_account_info(
-            st.secrets["gcp_service_account"],
-            scopes=['https://www.googleapis.com/auth/drive.readonly']
+def calculate_form_score(home_stats, away_stats):
+    home_form = home_stats['recent_win_rate']
+    away_form = away_stats['recent_win_rate']
+    form_diff = home_form - away_form
+    return (form_diff + 1) / 2  # Normalize to 0-1 range
+
+def calculate_possession_score(home_stats, away_stats):
+    corsi_diff = home_stats['corsiPercentage'] - away_stats['corsiPercentage']
+    fenwick_diff = home_stats['fenwickPercentage'] - away_stats['fenwickPercentage']
+    return ((corsi_diff + fenwick_diff) / 2) / 100  # Normalize to 0-1 range
+
+
+def calculate_h2h_score(h2h_stats):
+    if h2h_stats['games_played'] == 0:
+        return 0.5
+
+    win_rate = h2h_stats['home_team_wins'] / h2h_stats['games_played']
+    return win_rate
+
+
+def calculate_market_score(home_odds, away_odds, draw_odds):
+    home_prob = 1 / home_odds
+    away_prob = 1 / away_odds
+    draw_prob = 1 / draw_odds
+    total = home_prob + away_prob + draw_prob
+
+    # Normalize probabilities
+    home_prob_norm = home_prob / total
+    away_prob_norm = away_prob / total
+
+    market_confidence = abs(home_prob_norm - away_prob_norm)
+    return market_confidence
+
+
+def get_team_stats(team):
+    """Get team statistics with validation"""
+    query = """
+   WITH recent_games AS (
+       SELECT 
+           team,
+           games_played,
+           COALESCE("goalsFor", 0) as "goalsFor",
+           COALESCE("goalsAgainst", 0) as "goalsAgainst",
+           COALESCE("xGoalsPercentage", 50) as "xGoalsPercentage",
+           COALESCE("corsiPercentage", 50) as "corsiPercentage",
+           COALESCE("fenwickPercentage", 50) as "fenwickPercentage"
+       FROM nhl24_matchups_with_situations
+       WHERE team = %(team)s
+       ORDER BY games_played DESC
+       LIMIT 10
+   )
+   SELECT 
+       MAX(games_played) as games_played,
+       AVG("goalsFor") as "goalsFor",
+       AVG("goalsAgainst") as "goalsAgainst",
+       AVG("xGoalsPercentage") as "xGoalsPercentage",
+       AVG("corsiPercentage") as "corsiPercentage",
+       AVG("fenwickPercentage") as "fenwickPercentage",
+       COUNT(CASE WHEN "goalsFor" > "goalsAgainst" THEN 1 END)::float / 
+           NULLIF(COUNT(*), 0) as recent_win_rate
+   FROM recent_games
+   """
+    engine = init_connection()
+    result = pd.read_sql(query, engine, params={'team': team})
+    return result.iloc[0] if not result.empty else None
+
+
+def validate_data_quality(home_stats, away_stats, h2h_stats):
+    """Validate data meets minimum quality thresholds"""
+    MIN_GAMES = 5
+    MIN_H2H = 2
+
+    if not all([home_stats, away_stats]):
+        return False, "Missing team stats"
+
+    if home_stats['games_played'] < MIN_GAMES or away_stats['games_played'] < MIN_GAMES:
+        return False, "Insufficient recent games"
+
+    if h2h_stats['games_played'] < MIN_H2H:
+        return False, "Insufficient head-to-head history"
+
+    return True, "Data quality checks passed"
+
+
+def get_head_to_head_stats(home_team, away_team):
+    """Get H2H stats with validation"""
+    query = """
+   WITH game_results AS (
+       SELECT 
+           game_date,
+           home_team,
+           away_team,
+           CASE WHEN home_team_score > away_team_score THEN 1 ELSE 0 END as home_win
+       FROM nhl24_results
+       WHERE (home_team = %(home)s AND away_team = %(away)s)
+          OR (home_team = %(away)s AND away_team = %(home)s)
+       ORDER BY game_date DESC
+       LIMIT 5
+   )
+   SELECT 
+       COUNT(*) as games_played,
+       SUM(home_win) as home_team_wins
+   FROM game_results
+   """
+    engine = init_connection()
+    result = pd.read_sql(query, engine, params={'home': home_team, 'away': away_team})
+    return result.iloc[0] if not result.empty else pd.Series({'games_played': 0, 'home_team_wins': 0})
+
+
+def calculate_prediction(home_team, away_team, home_odds, away_odds, draw_odds):
+    # Get stats
+    home_stats = get_team_stats(home_team)
+    away_stats = get_team_stats(away_team)
+    h2h_stats = get_head_to_head_stats(home_team, away_team)
+
+    # Validate data
+    is_valid, message = validate_data_quality(home_stats, away_stats, h2h_stats)
+    if not is_valid:
+        return None, message
+
+    # Calculate weighted features
+    features = {
+        'xg_score': calculate_xg_score(home_stats, away_stats) * 0.25,
+        'form_score': calculate_form_score(home_stats, away_stats) * 0.20,
+        'h2h_score': calculate_h2h_score(h2h_stats) * 0.20,
+        'possession_score': calculate_possession_score(home_stats, away_stats) * 0.15,
+        'market_score': calculate_market_score(home_odds, away_odds, draw_odds) * 0.10
+    }
+
+    # Calculate final prediction
+    total_score = sum(features.values())
+
+    # Convert to probabilities
+    home_prob = total_score
+    away_prob = 1 - total_score
+    draw_prob = 0.2  # Base draw probability
+
+    # Normalize
+    total = home_prob + away_prob + draw_prob
+    probabilities = [away_prob / total, draw_prob / total, home_prob / total]
+
+    return probabilities, "Valid prediction"
+
+
+def display_prediction_results(probabilities, home_team, away_team, home_odds, away_odds, draw_odds):
+    st.header("Prediction Results")
+
+    col1, col2, col3 = st.columns(3)
+
+    # Calculate implied probabilities for value comparison
+    implied_probs = [
+        1 / away_odds / (1 / home_odds + 1 / away_odds + 1 / draw_odds),
+        1 / draw_odds / (1 / home_odds + 1 / away_odds + 1 / draw_odds),
+        1 / home_odds / (1 / home_odds + 1 / away_odds + 1 / draw_odds)
+    ]
+
+    with col1:
+        value = probabilities[0] - implied_probs[0]
+        st.metric(
+            f"{away_team} (Away)",
+            f"{probabilities[0]:.1%}",
+            f"Value: {value:+.1%}",
+            delta_color="normal" if value > 0 else "off"
         )
 
-        service = build('drive', 'v3', credentials=credentials)
-        file_id = st.secrets["drive_folder_id"]
-        model_name = "nhl_game_predictor_ensemble_v4.1_balanced.pkl"
+    with col2:
+        value = probabilities[1] - implied_probs[1]
+        st.metric(
+            "Draw",
+            f"{probabilities[1]:.1%}",
+            f"Value: {value:+.1%}",
+            delta_color="normal" if value > 0 else "off"
+        )
 
-        query = f"name='{model_name}' and '{file_id}' in parents"
-        results = service.files().list(q=query, fields="files(id, name)").execute()
-        files = results.get('files', [])
-
-        if not files:
-            st.error("Model file not found in Drive")
-            return None
-
-        request = service.files().get_media(fileId=files[0]['id'])
-        file_handle = io.BytesIO()
-        downloader = MediaIoBaseDownload(file_handle, request)
-
-        done = False
-        while not done:
-            _, done = downloader.next_chunk()
-
-        file_handle.seek(0)
-        return joblib.load(file_handle)
-
-    except Exception as e:
-        st.error(f"Error loading model from Google Drive: {str(e)}")
-        return None
+    with col3:
+        value = probabilities[2] - implied_probs[2]
+        st.metric(
+            f"{home_team} (Home)",
+            f"{probabilities[2]:.1%}",
+            f"Value: {value:+.1%}",
+            delta_color="normal" if value > 0 else "off"
+        )
 
 
-# Helper functions
 @st.cache_data
 def get_teams():
     engine = init_connection()
     query = """
-    SELECT DISTINCT team 
-    FROM nhl24_matchups_with_situations 
-    WHERE team IS NOT NULL 
-    ORDER BY team
-    """
+   SELECT DISTINCT team 
+   FROM nhl24_matchups_with_situations 
+   WHERE team IS NOT NULL 
+   ORDER BY team
+   """
     return pd.read_sql(query, engine)['team'].tolist()
 
 
-def get_team_stats(team):
-    """Get team statistics including all required metrics"""
-    query = """
-    WITH recent_games AS (
-        SELECT 
-            team,
-            COALESCE("goalsFor", 0) as "goalsFor",
-            COALESCE("goalsAgainst", 0) as "goalsAgainst",
-            COALESCE("xGoalsPercentage", 50) as "xGoalsPercentage",
-            COALESCE("corsiPercentage", 50) as "corsiPercentage",
-            COALESCE("fenwickPercentage", 50) as "fenwickPercentage"
-        FROM nhl24_matchups_with_situations
-        WHERE team = %(team)s
-        ORDER BY games_played DESC
-        LIMIT 10
-    ),
-    goalie_stats AS (
-        SELECT 
-            team,
-            COALESCE(MAX(save_percentage), 0.9) as goalie_save_percentage,
-            COALESCE(MAX(games_played), 1) as goalie_games
-        FROM nhl24_goalie_stats
-        WHERE team = %(team)s
-        GROUP BY team
-    ),
-    skater_stats AS (
-        SELECT 
-            team,
-            COALESCE(MAX(goals), 0) as top_scorer_goals
-        FROM nhl24_skater_stats
-        WHERE team = %(team)s AND position != 'G'
-        GROUP BY team
-    )
-    SELECT 
-        COALESCE(AVG(rg."goalsFor"), 2.5) as "goalsFor",
-        COALESCE(AVG(rg."goalsAgainst"), 2.5) as "goalsAgainst",
-        COALESCE(AVG(rg."xGoalsPercentage"), 50) as "xGoalsPercentage",
-        COALESCE(AVG(rg."corsiPercentage"), 50) as "corsiPercentage",
-        COALESCE(AVG(rg."fenwickPercentage"), 50) as "fenwickPercentage",
-        COALESCE(gs.goalie_save_percentage, 0.9) as goalie_save_percentage,
-        COALESCE(gs.goalie_games, 1) as goalie_games,
-        COALESCE(ss.top_scorer_goals, 0) as top_scorer_goals,
-        COALESCE(COUNT(CASE WHEN rg."goalsFor" > rg."goalsAgainst" THEN 1 END)::float / 
-            NULLIF(COUNT(*), 0), 0.5) as recent_win_rate
-    FROM recent_games rg
-    LEFT JOIN goalie_stats gs ON rg.team = gs.team
-    LEFT JOIN skater_stats ss ON rg.team = ss.team
-    GROUP BY gs.goalie_save_percentage, gs.goalie_games, ss.top_scorer_goals
-    """
-    engine = init_connection()
-    result = pd.read_sql(query, engine, params={'team': team})
-
-    # Return default values if no data found
-    default_values = {
-        'goalsFor': 2.5,
-        'goalsAgainst': 2.5,
-        'xGoalsPercentage': 50.0,
-        'corsiPercentage': 50.0,
-        'fenwickPercentage': 50.0,
-        'goalie_save_percentage': 0.9,
-        'goalie_games': 1,
-        'top_scorer_goals': 0,
-        'recent_win_rate': 0.5
-    }
-
-    if result.empty:
-        return pd.Series(default_values)
-
-    # Replace any None or NaN values with defaults
-    for col in result.columns:
-        if col in default_values:
-            result[col] = result[col].fillna(default_values[col])
-
-    return result.iloc[0]
-
-
-def get_head_to_head_stats(home_team, away_team):
-    """Get head-to-head statistics"""
-    query = """
-    WITH game_results AS (
-        SELECT 
-            game_date,
-            home_team,
-            away_team,
-            CAST(home_team_score AS INTEGER) as home_score,
-            CAST(away_team_score AS INTEGER) as away_score
-        FROM nhl24_results
-        WHERE (home_team = %(home)s AND away_team = %(away)s)
-           OR (home_team = %(away)s AND away_team = %(home)s)
-        ORDER BY game_date DESC
-        LIMIT 5
-    )
-    SELECT 
-        COUNT(*) as games_played,
-        SUM(CASE 
-            WHEN home_team = %(home)s AND home_score > away_score THEN 1
-            WHEN away_team = %(home)s AND away_score > home_score THEN 1
-            ELSE 0 
-        END) as home_team_wins,
-        AVG(home_score + away_score) as avg_total_goals
-    FROM game_results
-    """
-    engine = init_connection()
-    result = pd.read_sql(query, engine, params={'home': home_team, 'away': away_team})
-    return result.iloc[0] if not result.empty else pd.Series({
-        'games_played': 0,
-        'home_team_wins': 0,
-        'avg_total_goals': 5.0  # Default value
-    })
-
-
-def safe_get(stats, key, default=0.0):
-    """Safely get a value from stats with robust type checking and conversion"""
-    try:
-        # Get the value, use default if not found or None
-        val = stats.get(key)
-        if val is None or pd.isna(val):
-            return float(default)
-
-        # Try to convert to float, use default if fails
-        try:
-            val = float(val)
-            # Check for infinite or NaN values
-            if np.isinf(val) or np.isnan(val):
-                return float(default)
-            return val
-        except (ValueError, TypeError):
-            return float(default)
-
-    except Exception:
-        return float(default)
-
-
-def prepare_basic_features(home_team, away_team, home_odds, away_odds, draw_odds):
-    """Prepare features with robust error handling"""
-    try:
-        # Get team stats with debug output
-        st.write("Fetching team stats...")
-        home_stats = get_team_stats(home_team)
-        away_stats = get_team_stats(away_team)
-        h2h_stats = get_head_to_head_stats(home_team, away_team)
-
-        # Debug raw data
-        with st.expander("Raw Data"):
-            st.write("Home Stats:", dict(home_stats))
-            st.write("Away Stats:", dict(away_stats))
-            st.write("H2H Stats:", dict(h2h_stats))
-
-        # Constants for safety
-        EPSILON = 0.0001
-        DEFAULT_PERCENTAGE = 50.0
-
-        # Safely prepare features with explicit defaults
-        features = {
-            # H2H features
-            'h2h_home_win_pct': safe_get(h2h_stats, 'home_team_wins', 0) /
-                                max(safe_get(h2h_stats, 'games_played', 1), 1),
-            'h2h_games_played': safe_get(h2h_stats, 'games_played', 0),
-            'h2h_avg_total_goals': safe_get(h2h_stats, 'avg_total_goals', 5.0),
-
-            # Implied probabilities
-            'draw_implied_prob_normalized': ((1 / float(draw_odds)) /
-                                             ((1 / float(home_odds)) +
-                                              (1 / float(away_odds)) +
-                                              (1 / float(draw_odds)))),
-
-            # Recent form ratios
-            'relative_recent_wins_ratio': safe_get(home_stats, 'recent_win_rate', 0.5) /
-                                          max(safe_get(away_stats, 'recent_win_rate', 0.5), EPSILON),
-
-            'relative_recent_goals_avg_ratio': safe_get(home_stats, 'goalsFor', 2.5) /
-                                               max(safe_get(away_stats, 'goalsFor', 2.5), EPSILON),
-
-            'relative_recent_goals_allowed_ratio': safe_get(home_stats, 'goalsAgainst', 2.5) /
-                                                   max(safe_get(away_stats, 'goalsAgainst', 2.5), EPSILON),
-
-            # Goalie stats ratios
-            'relative_goalie_save_pct_ratio': safe_get(home_stats, 'goalie_save_percentage', 0.9) /
-                                              max(safe_get(away_stats, 'goalie_save_percentage', 0.9), EPSILON),
-
-            'relative_goalie_games_ratio': safe_get(home_stats, 'goalie_games', 1) /
-                                           max(safe_get(away_stats, 'goalie_games', 1), EPSILON),
-
-            # Team scoring ratios
-            'relative_team_goals_per_game_ratio': safe_get(home_stats, 'goalsFor', 2.5) /
-                                                  max(safe_get(away_stats, 'goalsFor', 2.5), EPSILON),
-
-            'relative_team_top_scorer_goals_ratio': (safe_get(home_stats, 'top_scorer_goals', 1) + EPSILON) /
-                                                    max(safe_get(away_stats, 'top_scorer_goals', 1) + EPSILON, EPSILON),
-
-            # Market probabilities ratio
-            'relative_implied_prob_normalized_ratio': ((1 / float(home_odds)) /
-                                                       ((1 / float(home_odds)) + (1 / float(away_odds)) + (
-                                                                   1 / float(draw_odds)))) /
-                                                      max((1 / float(away_odds)) /
-                                                          ((1 / float(home_odds)) + (1 / float(away_odds)) + (
-                                                                      1 / float(draw_odds))),
-                                                          EPSILON),
-
-            # Advanced stats ratios
-            'relative_xGoalsPercentage_ratio': safe_get(home_stats, 'xGoalsPercentage', DEFAULT_PERCENTAGE) /
-                                               max(safe_get(away_stats, 'xGoalsPercentage', DEFAULT_PERCENTAGE),
-                                                   EPSILON),
-
-            'relative_corsiPercentage_ratio': safe_get(home_stats, 'corsiPercentage', DEFAULT_PERCENTAGE) /
-                                              max(safe_get(away_stats, 'corsiPercentage', DEFAULT_PERCENTAGE), EPSILON),
-
-            'relative_fenwickPercentage_ratio': safe_get(home_stats, 'fenwickPercentage', DEFAULT_PERCENTAGE) /
-                                                max(safe_get(away_stats, 'fenwickPercentage', DEFAULT_PERCENTAGE),
-                                                    EPSILON)
-        }
-
-        # Validate features before returning
-        for key, value in features.items():
-            if value is None or np.isinf(value) or np.isnan(value):
-                st.error(f"Invalid value detected for {key}: {value}")
-                features[key] = 1.0  # Safe default
-
-        # Create DataFrame and validate
-        features_df = pd.DataFrame([features])
-
-        # Debug final features
-        with st.expander("Final Features Check"):
-            st.write("Feature names:", features_df.columns.tolist())
-            st.write("Feature values:", features_df.iloc[0].to_dict())
-            st.write("Any null values:", features_df.isnull().sum().to_dict())
-            st.write("Any infinite values:", np.isinf(features_df).sum().to_dict())
-
-        return features_df
-
-    except Exception as e:
-        st.error(f"Error in feature preparation: {str(e)}")
-        st.write("Debug information:")
-        st.write(f"Home team: {home_team}")
-        st.write(f"Away team: {away_team}")
-        st.write(f"Odds: {home_odds}/{away_odds}/{draw_odds}")
-        return None
-
-
-def display_prediction_results(probs, home_team, away_team, home_odds, away_odds, draw_odds, features_df):
-    st.header("Prediction Results")
-
-    quality_score, quality_reasons = assess_prediction_quality(features_df, probs)
-
-    # Quality warning
-    if quality_score < 0:
-        st.warning("⚠️ Low confidence prediction - consider skipping")
-        for reason in quality_reasons:
-            st.write(f"- {reason}")
-
-    outcomes = ["Away Win", "Draw", "Home Win"]
-    teams = [away_team, "Draw", home_team]
-    best_pred_idx = np.argmax(probs)
-    confidence = probs[best_pred_idx]
-
-    # Value calculation
-    implied_probs = [1 / away_odds, 1 / draw_odds, 1 / home_odds]
-    values = [p - ip for p, ip in zip(probs, implied_probs)]
-
-    col1, col2, col3 = st.columns(3)
+def display_team_stats(home_stats, away_stats, home_team, away_team):
+    st.header("Team Statistics")
+    col1, col2 = st.columns(2)
 
     with col1:
-        st.metric(
-            f"{away_team} (Away)",
-            f"{probs[0]:.1%}",
-            f"Value: {values[0]:+.1%}",
-            delta_color="normal" if values[0] > 0 else "off"
-        )
+        st.subheader(f"{home_team}")
+        st.metric("xG%", f"{home_stats['xGoalsPercentage']:.1f}%")
+        st.metric("Corsi%", f"{home_stats['corsiPercentage']:.1f}%")
+        st.metric("Recent Win Rate", f"{home_stats['recent_win_rate'] * 100:.1f}%")
 
     with col2:
-        st.metric(
-            "Draw",
-            f"{probs[1]:.1%}",
-            f"Value: {values[1]:+.1%}",
-            delta_color="normal" if values[1] > 0 else "off"
-        )
-
-    with col3:
-        st.metric(
-            f"{home_team} (Home)",
-            f"{probs[2]:.1%}",
-            f"Value: {values[2]:+.1%}",
-            delta_color="normal" if values[2] > 0 else "off"
-        )
-
-    # Display model's prediction with confidence
-    st.subheader("Model Prediction")
-    if confidence > 0.5:
-        st.success(f"Strong Prediction: {teams[best_pred_idx]} ({confidence:.1%} confident)")
-    elif confidence > 0.4:
-        st.info(f"Moderate Prediction: {teams[best_pred_idx]} ({confidence:.1%} confident)")
-    else:
-        st.warning(f"Low Confidence Prediction: {teams[best_pred_idx]} ({confidence:.1%} confident)")
-
-    # Additional confidence analysis
-    st.subheader("Prediction Confidence Analysis")
-    confidence_explanation = {
-        (0.6, 1.0): "Very High Confidence - Model strongly favors this outcome",
-        (0.5, 0.6): "High Confidence - Model shows clear preference",
-        (0.4, 0.5): "Moderate Confidence - Model shows slight preference",
-        (0.33, 0.4): "Low Confidence - Prediction uncertainty is high",
-        (0, 0.33): "Very Low Confidence - Too close to call"
-    }
-
-    for (lower, upper), explanation in confidence_explanation.items():
-        if confidence >= lower and confidence < upper:
-            st.write(explanation)
-            break
-
-    # Create visualization
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(15, 5))
-
-    # Probability distribution
-    labels = [f'{away_team}\n{probs[0]:.1%}', f'Draw\n{probs[1]:.1%}', f'{home_team}\n{probs[2]:.1%}']
-    colors = ['lightblue' if i == best_pred_idx else 'lightgray' for i in range(3)]
-
-    ax1.bar(range(3), probs, color=colors)
-    ax1.set_ylabel('Probability')
-    ax1.set_title('Model Prediction Probabilities')
-    ax1.set_xticks(range(3))
-    ax1.set_xticklabels(labels)
-
-    # Confidence gauge
-    gauge_colors = [(1, 0.7, 0.7), (1, 0.9, 0.7), (0.7, 1, 0.7)]  # Red to Yellow to Green
-    confidence_level = confidence
-    ax2.pie([confidence_level, 1 - confidence_level], colors=[gauge_colors[int(confidence_level * 2)], 'lightgray'],
-            labels=[f'Confidence\n{confidence_level:.1%}', ''], startangle=90)
-    ax2.set_title('Prediction Confidence Level')
-
-    plt.tight_layout()
-    st.pyplot(fig)
-
-    # Detailed stats comparison
-    st.subheader("Prediction Factors")
-    factors_df = pd.DataFrame({
-        'Factor': ['Model Confidence', 'Probability Margin', 'Prediction Strength'],
-        'Value': [
-            f"{confidence:.1%}",
-            f"{(max(probs) - sorted(probs)[-2]):.1%}",
-            "Strong" if confidence > 0.5 else "Moderate" if confidence > 0.4 else "Weak"
-        ],
-        'Interpretation': [
-            "How confident the model is in its prediction",
-            "Difference between best and second-best prediction",
-            "Overall strength of the prediction signal"
-        ]
-    })
-    st.table(factors_df)
-
-    # Warning for low confidence predictions
-    if confidence < 0.4:
-        st.warning("""
-        ⚠️ Low Confidence Prediction Warning:
-        - The model shows significant uncertainty in this prediction
-        - Consider waiting for more data or skipping this game
-        - Multiple outcomes have similar probabilities
-        """)
+        st.subheader(f"{away_team}")
+        st.metric("xG%", f"{away_stats['xGoalsPercentage']:.1f}%")
+        st.metric("Corsi%", f"{away_stats['corsiPercentage']:.1f}%")
+        st.metric("Recent Win Rate", f"{away_stats['recent_win_rate'] * 100:.1f}%")
 
 def main():
     st.title("NHL Game Predictor 🏒")
 
-    # Load model
-    with st.spinner("Loading prediction model..."):
-        model = load_model_from_drive()
-
-    if model is None:
-        st.error("Failed to load model. Please check the connection.")
-        return
-
-    # Create interface
     col1, col2 = st.columns(2)
-
     with col1:
         home_team = st.selectbox("Home Team", get_teams())
         home_odds = st.number_input("Home Odds", min_value=1.01, value=2.0, step=0.05)
@@ -515,96 +256,31 @@ def main():
             st.error("Please select different teams")
             return
 
-        try:
-            with st.spinner("Analyzing matchup..."):
-                features = prepare_basic_features(
-                    home_team, away_team,
-                    home_odds, away_odds, draw_odds
-                )
+        probabilities, message = calculate_prediction(
+            home_team, away_team,
+            home_odds, away_odds, draw_odds
+        )
 
-                if features is not None:
-                    # Validate features
-                    features = validate_features(features)
+        if probabilities is None:
+            st.error(message)
+        else:
+            display_prediction_results(
+                probabilities,
+                home_team, away_team,
+                home_odds, away_odds, draw_odds
+            )
 
-                    # Make prediction
-                    probabilities = model.predict_proba(features)[0]
+            # Show team stats
+            home_stats = get_team_stats(home_team)
+            away_stats = get_team_stats(away_team)
+            display_team_stats(home_stats, away_stats, home_team, away_team)
 
-                    # Display results with validated features
-                    display_prediction_results(
-                        probabilities,
-                        home_team,
-                        away_team,
-                        home_odds,
-                        away_odds,
-                        draw_odds,
-                        features
-                    )
-
-                    # Show additional stats
-                    st.header("Team Statistics")
-                    col1, col2 = st.columns(2)
-
-                    try:
-                        home_stats = get_team_stats(home_team)
-                        away_stats = get_team_stats(away_team)
-                        h2h_stats = get_head_to_head_stats(home_team, away_team)
-
-                        with col1:
-                            st.subheader(f"{home_team} Stats")
-                            st.metric("Goals For", f"{safe_get(home_stats, 'goalsFor'):.2f}")
-                            st.metric("xG%", f"{safe_get(home_stats, 'xGoalsPercentage'):.1f}%")
-                            st.metric("Corsi%", f"{safe_get(home_stats, 'corsiPercentage'):.1f}%")
-                            st.metric("Recent Win Rate", f"{safe_get(home_stats, 'recent_win_rate')*100:.1f}%")
-
-                        with col2:
-                            st.subheader(f"{away_team} Stats")
-                            st.metric("Goals For", f"{safe_get(away_stats, 'goalsFor'):.2f}")
-                            st.metric("xG%", f"{safe_get(away_stats, 'xGoalsPercentage'):.1f}%")
-                            st.metric("Corsi%", f"{safe_get(away_stats, 'corsiPercentage'):.1f}%")
-                            st.metric("Recent Win Rate", f"{safe_get(away_stats, 'recent_win_rate')*100:.1f}%")
-
-                        # Head to Head Stats
-                        if h2h_stats['games_played'] > 0:
-                            st.header("Head to Head History")
-                            st.write(f"Previous Meetings: {int(h2h_stats['games_played'])}")
-                            home_wins = int(h2h_stats['home_team_wins'])
-                            away_wins = int(h2h_stats['games_played'] - h2h_stats['home_team_wins'])
-                            st.write(f"{home_team} Wins: {home_wins}")
-                            st.write(f"{away_team} Wins: {away_wins}")
-                            st.write(f"Average Total Goals: {h2h_stats['avg_total_goals']:.1f}")
-                        else:
-                            st.info("No recent head-to-head matches found")
-
-                    except Exception as e:
-                        st.error(f"Error displaying team stats: {str(e)}")
-
-        except Exception as e:
-            st.error(f"Error making prediction: {str(e)}")
-            st.write("Debug information:")
-            st.write(f"Home team: {home_team}")
-            st.write(f"Away team: {away_team}")
-            st.write(f"Odds: {home_odds}/{away_odds}/{draw_odds}")
-
-    # Add information about how to use
-    with st.expander("How to use"):
-        st.write("""
-        1. Select the home and away teams
-        2. Enter the current betting odds (decimal format)
-        3. Click 'Get Prediction' for analysis
-        4. The model will show:
-           - Win/Draw probabilities
-           - Betting value analysis
-           - Team statistics comparison
-           - Head-to-head history (if available)
-        """)
-
-    # Add footer
-    st.markdown("---")
-    st.markdown("""
-        <div style='text-align: center'>
-            <p>NHL Game Predictor v4.1 | Using updated model trained on 2023-24 season data</p>
-        </div>
-        """, unsafe_allow_html=True)
+        st.markdown("---")
+        st.markdown("""
+               <div style='text-align: center'>
+                   <p>NHL Game Predictor v5.0 | Quality-First Predictions</p>
+               </div>
+               """, unsafe_allow_html=True)
 
 if __name__ == "__main__":
     main()
